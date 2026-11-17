@@ -1,0 +1,11 @@
+{
+  "name": "GESTUREX",
+  "description": "Gesture-controlled and voice-assisted file upload workspace powered by local hand tracking and speech recognition.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

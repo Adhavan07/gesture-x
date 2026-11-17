@@ -1,22 +1,9 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-
-# Virtual Environment
-.venv/
-venv/
-env/
-
-# IDE / Editor
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# OS
+node_modules/
+build/
+dist/
+coverage/
+uploads/
 .DS_Store
-Thumbs.db
-
+*.log
+.env*
+!.env.example
