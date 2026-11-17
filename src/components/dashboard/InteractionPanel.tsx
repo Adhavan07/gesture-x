@@ -233,7 +233,7 @@ export const InteractionPanel: React.FC = () => {
 
         <p className="mt-2.5 text-xs text-slate-400">
           {gestureModeEnabled
-            ? 'Point index to move · Thumb+Middle pinch: Left click (2x = Double, Hold = Drag) · Thumb+Index pinch: Right click · 2 Fingers: 2D Scroll · Off-hand Fist freezes cursor.'
+            ? 'Point index to move · Thumb+Index: Left Click/2x · Thumb+Middle: Right Click · Closed Fist: Choose/Grab · Open Palm: Drop anywhere · 2 Fingers: 2D Scroll.'
             : 'Camera permission is requested only when enabled. All 21-landmark dual-hand tracking runs locally via MediaPipe.'}
         </p>
 

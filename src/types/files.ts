@@ -115,4 +115,5 @@ export interface AppSettings {
   multiHandEnabled: boolean;
   preferredPointerHand: PointerHandPreference;
   gestureMappings: GestureMappingConfig;
+  gestureMappingVersion?: number;
 }

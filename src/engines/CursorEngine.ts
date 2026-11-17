@@ -72,13 +72,19 @@ export class CursorEngine {
       if (!(el instanceof HTMLElement)) continue;
 
       // Prioritize specific action buttons (including context menu items, modal buttons,
-      // and buttons nested inside cards/dropzones) before falling back to container targets.
+      // explorer tiles, and buttons nested inside cards/dropzones/overlays).
       const actionEl = el.closest<HTMLElement>('[data-gx-action]');
       if (actionEl?.dataset.gxAction) {
+        const explorerKindRaw = actionEl.dataset.gxExplorerKind;
         return {
           type: 'action',
           id: actionEl.dataset.gxAction,
           label: actionEl.dataset.gxLabel,
+          explorerPath: actionEl.dataset.gxExplorerPath,
+          explorerKind:
+            explorerKindRaw === 'file' || explorerKindRaw === 'directory'
+              ? explorerKindRaw
+              : undefined,
         };
       }
 
@@ -100,12 +106,39 @@ export class CursorEngine {
         };
       }
 
+      const overlayEl = el.closest<HTMLElement>('[data-gx-drag-overlay]');
+      if (overlayEl?.dataset.gxDragOverlay) {
+        return {
+          type: 'overlay',
+          id: overlayEl.dataset.gxDragOverlay,
+          label: overlayEl.dataset.gxLabel ?? 'Floating Overlay',
+        };
+      }
+
       const dropzoneEl = el.closest<HTMLElement>('[data-gx-dropzone]');
       if (dropzoneEl?.dataset.gxDropzone) {
         return {
           type: 'dropzone',
           id: dropzoneEl.dataset.gxDropzone,
           label: dropzoneEl.dataset.gxLabel ?? 'Upload Drop Zone',
+        };
+      }
+
+      // Generic fallback so AR/VR Closed Fist & Left Click can choose any interactive
+      // button, menu item, or link even in modals, panels, or overlays without explicit data-gx-action.
+      const interactiveEl = el.closest<HTMLElement>(
+        'button:not(:disabled), [role="menuitem"], [role="button"], a[href]'
+      );
+      if (interactiveEl) {
+        const label =
+          interactiveEl.dataset.gxLabel ||
+          interactiveEl.getAttribute('aria-label') ||
+          interactiveEl.textContent?.trim().slice(0, 42) ||
+          'Control';
+        return {
+          type: 'action',
+          id: '__dom__',
+          label,
         };
       }
     }

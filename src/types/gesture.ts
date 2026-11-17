@@ -31,6 +31,8 @@ export type GestureTrigger =
   | 'THUMBS_DOWN';
 
 export type MouseActionType =
+  | 'GRAB_CHOOSE'
+  | 'DROP_RELEASE'
   | 'LEFT_CLICK'
   | 'DOUBLE_CLICK'
   | 'RIGHT_CLICK'
@@ -45,26 +47,31 @@ export type MouseActionType =
 
 export type GestureMappingConfig = Record<MouseActionType, GestureTrigger>;
 
+export const GESTURE_MAPPING_VERSION = 2;
+
 /**
- * Recommended Virtual Mouse Default Mapping:
- * Non-overlapping discrete assignments so every mouse operation is unambiguous.
+ * Default AR/VR Virtual Mouse Mapping:
  * - Index Finger Pointing: Move Cursor
- * - Thumb + Middle Pinch (tap): Left Click | (2x rapid): Double Click | (hold): Drag & Drop
- * - Thumb + Index Pinch (tap): Right Click | (hold): Right-Button Hold
+ * - Thumb + Index Pinch (on meet): Left Click | (2x rapid): Double Click
+ * - Thumb + Middle Pinch (on meet): Right Click
+ * - Closed Fist: AR/VR Grab, Choose & Drag files, folders, or overlays
+ * - Open Palm: Drop carried file/folder/overlay at current screen or target
  * - Three Fingers Up: Choose / Multi-Select
  * - Two Fingers Extended: Vertical & Horizontal Scroll
- * - Open Palm: Pause | Closed Fist: Cancel | Thumbs Up: Confirm | Thumbs Down: Reject/Undo
+ * - Ring Pinch: Single-Hand Pause | Thumbs Up: Confirm | Thumbs Down: Cancel / Reject / Undo
  */
 export const DEFAULT_GESTURE_MAPPINGS: GestureMappingConfig = {
-  LEFT_CLICK: 'MIDDLE_PINCH',
-  DOUBLE_CLICK: 'DOUBLE_MIDDLE_PINCH',
-  RIGHT_CLICK: 'INDEX_PINCH',
+  GRAB_CHOOSE: 'FIST',
+  DROP_RELEASE: 'OPEN_PALM',
+  LEFT_CLICK: 'INDEX_PINCH',
+  DOUBLE_CLICK: 'DOUBLE_INDEX_PINCH',
+  RIGHT_CLICK: 'MIDDLE_PINCH',
   CHOOSE_SELECT: 'THREE_FINGER',
-  DRAG_DROP: 'MIDDLE_PINCH',
-  RIGHT_BUTTON_HOLD: 'INDEX_PINCH',
+  DRAG_DROP: 'FIST',
+  RIGHT_BUTTON_HOLD: 'RING_PINCH',
   SCROLL: 'TWO_FINGER',
-  PAUSE_TRACKING: 'OPEN_PALM',
-  CANCEL_ACTION: 'FIST',
+  PAUSE_TRACKING: 'RING_PINCH',
+  CANCEL_ACTION: 'THUMBS_DOWN',
   CONFIRM_ACTION: 'THUMBS_UP',
   REJECT_ACTION: 'THUMBS_DOWN',
 };
@@ -81,17 +88,19 @@ export const GESTURE_PRESETS: Array<{
 }> = [
   {
     id: 'virtual_mouse',
-    label: 'Two-Hand Virtual Mouse',
+    label: 'AR/VR Virtual Mouse',
     summary:
-      'Middle pinch for Left Click/Drag/2x-Click, Index pinch for Right Click/Hold, Two-finger 2D scroll.',
+      'Thumb+Index pinch for instant Left Click (2x Double-Click), Thumb+Middle pinch for instant Right Click, Closed Fist Grab/Drag & Open Palm Drop.',
     mappings: { ...DEFAULT_GESTURE_MAPPINGS },
   },
   {
     id: 'classic_index',
-    label: 'Classic Index Pinch',
+    label: 'Pinch-to-Drag Classic',
     summary:
-      'Index pinch for Left Click & Drag, Double Index Pinch for Double Click, Middle pinch for Right Click.',
+      'Thumb+Index pinch for Left Click / Hold-to-Drag, Thumb+Middle pinch for Right Click, plus Closed Fist Grab & Open Palm Drop.',
     mappings: {
+      GRAB_CHOOSE: 'FIST',
+      DROP_RELEASE: 'OPEN_PALM',
       LEFT_CLICK: 'INDEX_PINCH',
       DOUBLE_CLICK: 'DOUBLE_INDEX_PINCH',
       RIGHT_CLICK: 'MIDDLE_PINCH',
@@ -99,8 +108,8 @@ export const GESTURE_PRESETS: Array<{
       DRAG_DROP: 'INDEX_PINCH',
       RIGHT_BUTTON_HOLD: 'RING_PINCH',
       SCROLL: 'TWO_FINGER',
-      PAUSE_TRACKING: 'OPEN_PALM',
-      CANCEL_ACTION: 'FIST',
+      PAUSE_TRACKING: 'RING_PINCH',
+      CANCEL_ACTION: 'THUMBS_DOWN',
       CONFIRM_ACTION: 'THUMBS_UP',
       REJECT_ACTION: 'THUMBS_DOWN',
     },
@@ -109,17 +118,19 @@ export const GESTURE_PRESETS: Array<{
     id: 'one_handed',
     label: 'Low-Strain One-Hand',
     summary:
-      'Index pinch Left Click/Drag with Three-Finger Right Click and Thumbs-Up Selection to minimize strain.',
+      'Thumb+Index Left Click, Three-Finger Right Click, Thumbs-Up Selection, Closed Fist Grab/Drag & Open Palm Drop.',
     mappings: {
+      GRAB_CHOOSE: 'FIST',
+      DROP_RELEASE: 'OPEN_PALM',
       LEFT_CLICK: 'INDEX_PINCH',
       DOUBLE_CLICK: 'DOUBLE_INDEX_PINCH',
       RIGHT_CLICK: 'THREE_FINGER',
       CHOOSE_SELECT: 'THUMBS_UP',
-      DRAG_DROP: 'INDEX_PINCH',
-      RIGHT_BUTTON_HOLD: 'MIDDLE_PINCH',
+      DRAG_DROP: 'FIST',
+      RIGHT_BUTTON_HOLD: 'RING_PINCH',
       SCROLL: 'TWO_FINGER',
-      PAUSE_TRACKING: 'OPEN_PALM',
-      CANCEL_ACTION: 'FIST',
+      PAUSE_TRACKING: 'RING_PINCH',
+      CANCEL_ACTION: 'THUMBS_DOWN',
       CONFIRM_ACTION: 'RING_PINCH',
       REJECT_ACTION: 'THUMBS_DOWN',
     },
@@ -147,21 +158,37 @@ export const MOUSE_ACTION_META: Array<{
   mode: 'click' | 'hold' | 'continuous' | 'control';
 }> = [
   {
+    action: 'GRAB_CHOOSE',
+    label: 'AR/VR Grab & Choose',
+    description:
+      'Close hand into a fist to choose any UI/overlay item or grab a file/folder/overlay to move at will.',
+    mode: 'hold',
+  },
+  {
+    action: 'DROP_RELEASE',
+    label: 'Open-Palm Drop',
+    description:
+      'Open palm to drop the carried file, folder, or overlay onto any screen or target.',
+    mode: 'control',
+  },
+  {
     action: 'LEFT_CLICK',
     label: 'Left Click',
-    description: 'Pinch & release to click buttons, tabs, menus, or toggle selection.',
+    description:
+      'Fires immediately when thumb and index tips meet to click buttons, tabs, menus, or toggle selection.',
     mode: 'click',
   },
   {
     action: 'DOUBLE_CLICK',
     label: 'Double Click',
-    description: 'Two rapid pinch cycles to open full file preview or folder contents.',
+    description: 'Two rapid pinches to open full file preview or folder contents.',
     mode: 'click',
   },
   {
     action: 'RIGHT_CLICK',
     label: 'Right Click',
-    description: 'Pinch & release to open the floating context menu at cursor.',
+    description:
+      'Fires immediately when thumb and middle tips meet to open the floating context menu at cursor.',
     mode: 'click',
   },
   {
@@ -172,8 +199,8 @@ export const MOUSE_ACTION_META: Array<{
   },
   {
     action: 'DRAG_DROP',
-    label: 'Drag & Drop (Left Hold)',
-    description: 'Hold pinch to pick up a file and release over Upload Zone or Folder.',
+    label: 'Drag & Drop (Hold)',
+    description: 'Hold gesture (Closed Fist by default) to carry items and release with Open Palm.',
     mode: 'hold',
   },
   {
@@ -306,6 +333,7 @@ export interface GestureFrameResult {
   multiHandEnabled: boolean;
   hands: HandsMap;
   modifiers: TwoHandModifierState;
+  grabSource?: 'FIST' | 'PINCH';
   event?: GestureEventType;
   scrollDeltaY?: number;
   scrollDeltaX?: number;

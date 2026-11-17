@@ -25,6 +25,8 @@ export const CameraPreview: React.FC = () => {
     recognizedGesture,
     gestureConfidence,
     palmOrientation,
+    hoveredTarget,
+    draggingItem,
     settings,
     subscribeTracking,
     toggleGestureMode,
@@ -167,19 +169,47 @@ export const CameraPreview: React.FC = () => {
         y: Math.max(72, Math.min(window.innerHeight - 160, prev.y)),
       }));
     };
+    const handleGestureOverlayMove = (e: Event) => {
+      const custom = e as CustomEvent<{ id?: string; dx?: number; dy?: number }>;
+      if (custom.detail?.id !== 'camera-preview') return;
+      const dx = custom.detail.dx ?? 0;
+      const dy = custom.detail.dy ?? 0;
+      if (dx === 0 && dy === 0) return;
+      setPosition((prev) => ({
+        x: Math.max(12, Math.min(window.innerWidth - 300, prev.x + dx)),
+        y: Math.max(72, Math.min(window.innerHeight - 160, prev.y + dy)),
+      }));
+    };
     window.addEventListener('resize', clampOnResize);
-    return () => window.removeEventListener('resize', clampOnResize);
+    window.addEventListener('gx:move-overlay', handleGestureOverlayMove);
+    return () => {
+      window.removeEventListener('resize', clampOnResize);
+      window.removeEventListener('gx:move-overlay', handleGestureOverlayMove);
+    };
   }, []);
 
   if (!gestureModeEnabled) return null;
 
+  const isOverlayGrabbed =
+    draggingItem?.kind === 'overlay' && draggingItem.id === 'camera-preview';
+  const isOverlayHovered =
+    hoveredTarget.type === 'overlay' && hoveredTarget.id === 'camera-preview';
+
   return (
     <aside
       aria-label="Gesture Tracking Overlay"
+      data-gx-drag-overlay="camera-preview"
+      data-gx-label="Hand Tracker Overlay"
       style={{
         transform: `translate3d(${position.x}px, ${position.y}px, 0)`,
       }}
-      className="fixed left-0 top-0 z-30 w-[290px] overflow-hidden rounded-xl border border-slate-700/90 bg-[#0A1222]/95 shadow-2xl backdrop-blur-md"
+      className={`fixed left-0 top-0 z-30 w-[290px] overflow-hidden rounded-xl border bg-[#0A1222]/95 shadow-2xl backdrop-blur-md transition-colors ${
+        isOverlayGrabbed
+          ? 'border-cyan-400 ring-2 ring-cyan-400/40'
+          : isOverlayHovered
+            ? 'border-cyan-400/80'
+            : 'border-slate-700/90'
+      }`}
     >
       {/* Draggable header */}
       <div
@@ -204,6 +234,8 @@ export const CameraPreview: React.FC = () => {
         <div className="flex items-center gap-1">
           <button
             type="button"
+            data-gx-action="overlay-minimize"
+            data-gx-label={minimized ? 'Expand Tracker' : 'Minimize Tracker'}
             aria-label={minimized ? 'Expand camera preview' : 'Minimize camera preview'}
             onClick={() => setMinimized((m) => !m)}
             className="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
@@ -216,6 +248,8 @@ export const CameraPreview: React.FC = () => {
           </button>
           <button
             type="button"
+            data-gx-action="overlay-close"
+            data-gx-label="Disable Gesture Camera"
             aria-label="Disable gesture camera"
             onClick={() => void toggleGestureMode()}
             className="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-rose-300"

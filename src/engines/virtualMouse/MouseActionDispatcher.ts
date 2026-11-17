@@ -7,8 +7,13 @@ export interface MouseActionHandlers {
   onDoubleClick: (target: CursorHoverTarget, x: number, y: number) => void;
   onRightClick: (target: CursorHoverTarget, x: number, y: number) => void;
   onChooseSelect: (target: CursorHoverTarget) => void;
-  onDragStart: (target: CursorHoverTarget) => void;
-  onDrop: (target: CursorHoverTarget) => void;
+  onDragStart: (
+    target: CursorHoverTarget,
+    x: number,
+    y: number,
+    grabSource?: 'FIST' | 'PINCH'
+  ) => void;
+  onDrop: (target: CursorHoverTarget, x: number, y: number) => void;
   onCancel: () => void;
   onConfirm: () => void;
   onReject: () => void;
@@ -27,6 +32,7 @@ export class MouseActionDispatcher {
       hover: CursorHoverTarget;
       cursorX: number;
       cursorY: number;
+      grabSource?: 'FIST' | 'PINCH';
       scrollDeltaX?: number;
       scrollDeltaY?: number;
       findScrollableElement: (x: number, y: number) => HTMLElement | null;
@@ -38,6 +44,7 @@ export class MouseActionDispatcher {
       hover,
       cursorX,
       cursorY,
+      grabSource,
       scrollDeltaX = 0,
       scrollDeltaY = 0,
       findScrollableElement,
@@ -62,10 +69,10 @@ export class MouseActionDispatcher {
         handlers.onChooseSelect(hover);
         break;
       case 'DRAG_START':
-        handlers.onDragStart(hover);
+        handlers.onDragStart(hover, cursorX, cursorY, grabSource);
         break;
       case 'DROP':
-        handlers.onDrop(hover);
+        handlers.onDrop(hover, cursorX, cursorY);
         break;
       case 'CANCEL':
         handlers.onCancel();
@@ -102,6 +109,7 @@ export class MouseActionDispatcher {
   ): void {
     this.dispatchEvent(frameResult.event, {
       ...options,
+      grabSource: frameResult.grabSource,
       scrollDeltaX: frameResult.scrollDeltaX,
       scrollDeltaY: frameResult.scrollDeltaY,
     });
@@ -112,6 +120,7 @@ export class MouseActionDispatcher {
     ) {
       this.dispatchEvent(frameResult.secondaryEvent, {
         ...options,
+        grabSource: frameResult.grabSource,
         scrollDeltaX: frameResult.secondaryScrollDeltaX,
         scrollDeltaY: frameResult.secondaryScrollDeltaY,
       });

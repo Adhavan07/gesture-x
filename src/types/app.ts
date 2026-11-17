@@ -27,9 +27,23 @@ export interface RenameModalState {
 }
 
 export interface CursorHoverTarget {
-  type: 'file' | 'folder' | 'dropzone' | 'action' | null;
+  type: 'file' | 'folder' | 'dropzone' | 'action' | 'overlay' | null;
   id: string | null;
   label?: string;
+  explorerPath?: string;
+  explorerKind?: 'file' | 'directory';
+}
+
+export interface DraggedItemState {
+  kind: 'file' | 'folder' | 'overlay' | 'explorer-node';
+  id: string;
+  label: string;
+  count?: number;
+  explorerPath?: string;
+  explorerKind?: 'file' | 'directory';
+  grabSource: 'FIST' | 'PINCH';
+  startX: number;
+  startY: number;
 }
 
 export interface ContextMenuState {

@@ -33,6 +33,7 @@ export const GestureExplorerModal: React.FC = () => {
     files: stagedFiles,
     toggleFileSelection,
     hoveredTarget,
+    draggingItem,
     gestureModeEnabled,
     isInIframe,
   } = useAppStore();
@@ -363,8 +364,7 @@ export const GestureExplorerModal: React.FC = () => {
         <div className="flex-1 overflow-y-auto bg-slate-950/50 p-5">
           {gestureModeEnabled ? (
             <div className="mb-4 rounded-lg border border-slate-800 bg-slate-900/70 px-3.5 py-2.5 text-xs text-slate-300">
-              <strong>Virtual Cursor Navigation:</strong> Pinch-tap any file to select,
-              pinch-tap a folder to open it, and use Two Fingers to scroll.{' '}
+              <strong>AR/VR Gesture Navigation:</strong> Close Fist on any file, folder, or button to choose/grab it; move and <strong>Open Palm</strong> to drop directly onto the Workspace (or tap with pinch).{' '}
               {!explorerRoot ? (
                 <span className="text-slate-400">
                   (Browser security blocks virtual cursors inside OS native popups—click{' '}
@@ -413,6 +413,9 @@ export const GestureExplorerModal: React.FC = () => {
                 const isSelected = selectedPaths.has(entry.path);
                 const isHovered =
                   hoveredTarget.type === 'action' && hoveredTarget.id === actionId;
+                const isGrabbed =
+                  draggingItem?.kind === 'explorer-node' &&
+                  draggingItem.explorerPath === entry.path;
 
                 return (
                   <button
@@ -420,17 +423,21 @@ export const GestureExplorerModal: React.FC = () => {
                     type="button"
                     data-gx-action={actionId}
                     data-gx-label={entry.name}
+                    data-gx-explorer-path={entry.path}
+                    data-gx-explorer-kind={entry.kind}
                     onClick={() =>
                       entry.kind === 'directory'
                         ? enterDirectory(entry)
                         : toggleNodeSelect(entry)
                     }
                     className={`flex min-h-[56px] items-center justify-between gap-3 rounded-xl border p-3 text-left transition-colors ${
-                      isHovered
-                        ? 'border-cyan-400 bg-cyan-500/15'
-                        : isSelected
-                          ? 'border-blue-500 bg-blue-500/15'
-                          : 'border-slate-800 bg-[#0B1324] hover:border-slate-700'
+                      isGrabbed
+                        ? 'border-cyan-400 bg-cyan-500/20 opacity-85'
+                        : isHovered
+                          ? 'border-cyan-400 bg-cyan-500/15'
+                          : isSelected
+                            ? 'border-blue-500 bg-blue-500/15'
+                            : 'border-slate-800 bg-[#0B1324] hover:border-slate-700'
                     }`}
                   >
                     <div className="flex items-center gap-3 min-w-0">

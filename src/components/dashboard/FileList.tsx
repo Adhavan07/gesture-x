@@ -22,6 +22,7 @@ export const FileList: React.FC = () => {
     setFileFilter,
     hoveredTarget,
     draggingFileId,
+    draggingItem,
     toggleFileSelection,
     selectFolder,
     selectAllFiles,
@@ -74,6 +75,12 @@ export const FileList: React.FC = () => {
             {folders.map((folder) => {
               const isHovered =
                 hoveredTarget.type === 'folder' && hoveredTarget.id === folder.id;
+              const isGrabbed =
+                draggingItem?.kind === 'folder' && draggingItem.id === folder.id;
+              const isValidDropTarget =
+                draggingItem &&
+                (draggingItem.kind === 'file' ||
+                  (draggingItem.kind === 'folder' && draggingItem.id !== folder.id));
               return (
                 <button
                   key={folder.id}
@@ -97,11 +104,17 @@ export const FileList: React.FC = () => {
                   data-gx-folder-id={folder.id}
                   data-gx-label={folder.name}
                   className={`flex items-center justify-between gap-3 rounded-xl border p-3.5 text-left transition-colors ${
-                    isHovered
-                      ? 'border-cyan-400 bg-cyan-500/10'
-                      : folder.selected
-                        ? 'border-blue-500/70 bg-blue-500/10'
-                        : 'border-slate-800 bg-[#0D1628]/80 hover:border-slate-700'
+                    isGrabbed
+                      ? 'border-cyan-400 bg-cyan-500/20 opacity-75'
+                      : isHovered && isValidDropTarget
+                        ? 'border-cyan-400 bg-cyan-500/20 ring-1 ring-cyan-400/50'
+                        : isHovered
+                          ? 'border-cyan-400 bg-cyan-500/10'
+                          : isValidDropTarget
+                            ? 'border-cyan-500/40 bg-cyan-500/5'
+                            : folder.selected
+                              ? 'border-blue-500/70 bg-blue-500/10'
+                              : 'border-slate-800 bg-[#0D1628]/80 hover:border-slate-700'
                   }`}
                 >
                   <div className="flex items-center gap-3 min-w-0">
@@ -113,7 +126,9 @@ export const FileList: React.FC = () => {
                         {folder.name}
                       </p>
                       <p className="text-xs text-slate-400 font-mono tabular-nums">
-                        {folder.fileIds.length} files · {formatBytes(folder.totalSize)}
+                        {isHovered && isValidDropTarget
+                          ? 'Open Palm to move here'
+                          : `${folder.fileIds.length} files · ${formatBytes(folder.totalSize)}`}
                       </p>
                     </div>
                   </div>
@@ -122,6 +137,22 @@ export const FileList: React.FC = () => {
             })}
           </div>
         </section>
+      ) : null}
+
+      {draggingItem &&
+      (draggingItem.kind === 'file' || draggingItem.kind === 'folder') &&
+      folders.length > 0 ? (
+        <div
+          data-gx-dropzone="queue-root"
+          data-gx-label="Workspace Root (Ungroup)"
+          className={`rounded-xl border border-dashed px-4 py-3 text-center text-xs transition-colors ${
+            hoveredTarget.type === 'dropzone' && hoveredTarget.id === 'queue-root'
+              ? 'border-cyan-400 bg-cyan-500/15 text-cyan-200'
+              : 'border-slate-700 bg-slate-900/50 text-slate-400'
+          }`}
+        >
+          Open Palm here to move item out of its folder to Workspace Root
+        </div>
       ) : null}
 
       {/* Selected / Staged Files section */}

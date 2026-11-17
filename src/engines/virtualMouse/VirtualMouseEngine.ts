@@ -57,6 +57,10 @@ export class VirtualMouseEngine {
     }
   }
 
+  public completeInstantGrab(): void {
+    this.fsm.completeInstantGrab(Date.now(), Math.min(240, this.config.cooldownMs));
+  }
+
   public reset(): void {
     this.dualTracker.reset();
     this.roleManager.reset();
@@ -133,6 +137,7 @@ export class VirtualMouseEngine {
       multiHandEnabled: this.config.multiHandEnabled,
       hands,
       modifiers: modEval.modifiers,
+      grabSource: stepOut.grabSource,
       event: modEval.modifiers.emergencyStopActive
         ? 'EMERGENCY_STOP'
         : stepOut.event,

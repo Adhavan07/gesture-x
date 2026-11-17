@@ -79,9 +79,14 @@ export interface StateMachineStepOutput {
   };
   cursorNormalized: { x: number; y: number };
   pinchDistance: number;
+  grabSource?: 'FIST' | 'PINCH';
   event?: GestureEventType;
   scrollDeltaX?: number;
   scrollDeltaY?: number;
+}
+
+function clamp01(v: number): number {
+  return Math.max(0, Math.min(1, v));
 }
 
 export class GestureStateMachine {
@@ -89,6 +94,10 @@ export class GestureStateMachine {
   private externallyPaused = false;
   private bimanualPaused = false;
   private activePinchGesture: GestureType | null = null;
+  private activeGrabType: 'FIST' | 'PINCH' | null = null;
+  private latchedInstantPinch: GestureType | null = null;
+  private hasCursorPosition = false;
+  private fistAnchorOffset: { x: number; y: number } | null = null;
   private pinchStartMs = 0;
   private pinchFrames = 0;
   private releaseFrames = 0;
@@ -130,17 +139,35 @@ export class GestureStateMachine {
     this.state = 'CANCELLED';
   }
 
+  public completeInstantGrab(nowMs: number = Date.now(), cooldownMs = 220): void {
+    this.state = 'IDLE';
+    this.activeGrabType = null;
+    this.activePinchGesture = null;
+    this.latchedInstantPinch = null;
+    this.fistAnchorOffset = null;
+    this.pinchFrames = 0;
+    this.releaseFrames = 0;
+    this.cooldownUntil = nowMs + cooldownMs;
+  }
+
   private enterPausedState(): void {
     this.state = 'PAUSED';
     this.pinchFrames = 0;
     this.releaseFrames = 0;
     this.activePinchGesture = null;
+    this.activeGrabType = null;
+    this.latchedInstantPinch = null;
+    this.fistAnchorOffset = null;
   }
 
   public reset(): void {
     this.bimanualPaused = false;
     this.state = this.externallyPaused ? 'PAUSED' : 'IDLE';
     this.activePinchGesture = null;
+    this.activeGrabType = null;
+    this.latchedInstantPinch = null;
+    this.hasCursorPosition = false;
+    this.fistAnchorOffset = null;
     this.pinchStartMs = 0;
     this.pinchFrames = 0;
     this.releaseFrames = 0;
@@ -174,8 +201,8 @@ export class GestureStateMachine {
     const m = config.mappings;
     const priority: MouseActionType[] = [
       'PAUSE_TRACKING',
-      'CANCEL_ACTION',
       'REJECT_ACTION',
+      'CANCEL_ACTION',
       'RIGHT_CLICK',
       'DOUBLE_CLICK',
       'CHOOSE_SELECT',
@@ -190,6 +217,19 @@ export class GestureStateMachine {
     return null;
   }
 
+  private isInstantOnMeetPinchTrigger(
+    trigger: GestureTrigger | null,
+    gesture: GestureType,
+    config: GestureConfig
+  ): boolean {
+    if (!trigger || !isPinchGestureType(gesture)) return false;
+    const m = config.mappings;
+    if (trigger === m.DRAG_DROP || trigger === m.RIGHT_BUTTON_HOLD) {
+      return false;
+    }
+    return trigger === m.LEFT_CLICK || trigger === m.RIGHT_CLICK;
+  }
+
   private isPinchTapOrHoldTrigger(
     trigger: GestureTrigger | null,
     gesture: GestureType,
@@ -197,12 +237,7 @@ export class GestureStateMachine {
   ): boolean {
     if (!trigger || !isPinchGestureType(gesture)) return false;
     const m = config.mappings;
-    return (
-      trigger === m.DRAG_DROP ||
-      trigger === m.LEFT_CLICK ||
-      trigger === m.RIGHT_CLICK ||
-      trigger === m.RIGHT_BUTTON_HOLD
-    );
+    return trigger === m.DRAG_DROP || trigger === m.RIGHT_BUTTON_HOLD;
   }
 
   public step(options: {
@@ -227,6 +262,9 @@ export class GestureStateMachine {
           this.state = 'CANCELLED';
           this.pinchFrames = 0;
           this.activePinchGesture = null;
+          this.activeGrabType = null;
+          this.latchedInstantPinch = null;
+          this.fistAnchorOffset = null;
           return {
             state: this.state,
             stableGesture: 'NONE',
@@ -246,6 +284,9 @@ export class GestureStateMachine {
         }
         this.state =
           this.externallyPaused || this.bimanualPaused ? 'PAUSED' : 'IDLE';
+        this.activeGrabType = null;
+        this.latchedInstantPinch = null;
+        this.fistAnchorOffset = null;
       }
 
       return {
@@ -268,26 +309,87 @@ export class GestureStateMachine {
     this.lostFrames = 0;
     const raw = recognizeGesture(landmarks, config.pinchThreshold);
     const stableGesture = tracker.stableGesture;
+    const knuckleNorm = {
+      x: mirror ? 1 - landmarks[5].x : landmarks[5].x,
+      y: landmarks[5].y,
+    };
 
-    // Freeze cursor coordinates during PINCH_STARTED or Secondary Fist cursor-freeze clutch
+    // Re-arm instant pinch click as soon as fingers separate past releaseThreshold
+    // (evaluated before cooldown early-return so rapid double-pinch unlocks cleanly).
+    if (
+      this.latchedInstantPinch &&
+      !this.isPinchHeldWithHysteresis(
+        raw,
+        this.latchedInstantPinch,
+        config.releaseThreshold
+      ) &&
+      raw.gesture !== this.latchedInstantPinch
+    ) {
+      this.latchedInstantPinch = null;
+    }
+
+    // Freeze cursor coordinates during PINCH_STARTED, instant pinch contact, or Secondary Fist clutch.
+    // During FIST grab (or when closing into a FIST), track via Index MCP knuckle[5] + anchor
+    // offset so curling fingers never jerks the virtual cursor off target.
     if (this.state !== 'PINCH_STARTED' && !modifiers.cursorFrozen) {
-      const tip =
-        raw.gesture === 'PINCH' && this.state === 'DRAGGING'
-          ? {
-              x: (landmarks[4].x + landmarks[8].x) * 0.5,
-              y: (landmarks[4].y + landmarks[8].y) * 0.5,
-            }
-          : raw.gesture === 'MIDDLE_PINCH' && this.state === 'DRAGGING'
+      if (this.state === 'DRAGGING' && this.activeGrabType === 'FIST') {
+        if (raw.gesture === 'OPEN_PALM') {
+          // Freeze cursor on drop-initiation frame so opening fingers does not drift off target
+        } else {
+          if (!this.fistAnchorOffset) {
+            this.fistAnchorOffset = {
+              x: this.lastCursorNorm.x - knuckleNorm.x,
+              y: this.lastCursorNorm.y - knuckleNorm.y,
+            };
+          }
+          this.lastCursorNorm = {
+            x: clamp01(knuckleNorm.x + this.fistAnchorOffset.x),
+            y: clamp01(knuckleNorm.y + this.fistAnchorOffset.y),
+          };
+          this.hasCursorPosition = true;
+        }
+      } else if (raw.gesture === 'FIST') {
+        if (!this.fistAnchorOffset) {
+          this.fistAnchorOffset = {
+            x: this.lastCursorNorm.x - knuckleNorm.x,
+            y: this.lastCursorNorm.y - knuckleNorm.y,
+          };
+        }
+        this.lastCursorNorm = {
+          x: clamp01(knuckleNorm.x + this.fistAnchorOffset.x),
+          y: clamp01(knuckleNorm.y + this.fistAnchorOffset.y),
+        };
+        this.hasCursorPosition = true;
+      } else if (
+        this.hasCursorPosition &&
+        this.state !== 'DRAGGING' &&
+        (raw.gesture === 'PINCH' ||
+          raw.gesture === 'MIDDLE_PINCH' ||
+          raw.gesture === 'RING_PINCH')
+      ) {
+        this.fistAnchorOffset = null;
+        // Keep cursor steady on the aimed target while thumb & fingertip meet
+      } else {
+        this.fistAnchorOffset = null;
+        const tip =
+          raw.gesture === 'PINCH' && this.state === 'DRAGGING'
             ? {
-                x: (landmarks[4].x + landmarks[12].x) * 0.5,
-                y: (landmarks[4].y + landmarks[12].y) * 0.5,
+                x: (landmarks[4].x + landmarks[8].x) * 0.5,
+                y: (landmarks[4].y + landmarks[8].y) * 0.5,
               }
-            : { x: landmarks[8].x, y: landmarks[8].y };
+            : raw.gesture === 'MIDDLE_PINCH' && this.state === 'DRAGGING'
+              ? {
+                  x: (landmarks[4].x + landmarks[12].x) * 0.5,
+                  y: (landmarks[4].y + landmarks[12].y) * 0.5,
+                }
+              : { x: landmarks[8].x, y: landmarks[8].y };
 
-      this.lastCursorNorm = {
-        x: mirror ? 1 - tip.x : tip.x,
-        y: tip.y,
-      };
+        this.lastCursorNorm = {
+          x: mirror ? 1 - tip.x : tip.x,
+          y: tip.y,
+        };
+        this.hasCursorPosition = true;
+      }
     }
 
     if (modifiers.emergencyStopActive) {
@@ -354,7 +456,7 @@ export class GestureStateMachine {
     const stableTrigger = gestureTypeToTrigger(stableGesture);
     const mappings = config.mappings;
 
-    // 1. Cancel trigger (default FIST)
+    // 1. Cancel trigger (default THUMBS_DOWN; cancels active drag/pinch/hold)
     if (stableTrigger && stableTrigger === mappings.CANCEL_ACTION) {
       if (
         this.state === 'PINCH_STARTED' ||
@@ -365,6 +467,8 @@ export class GestureStateMachine {
         this.pinchFrames = 0;
         this.releaseFrames = 0;
         this.activePinchGesture = null;
+        this.activeGrabType = null;
+        this.fistAnchorOffset = null;
         this.cooldownUntil = nowMs + config.cooldownMs;
         tracker.lastTriggeredGesture = stableGesture;
         return {
@@ -379,23 +483,29 @@ export class GestureStateMachine {
         };
       }
 
-      tracker.lastScrollX = null;
-      tracker.lastScrollY = null;
-      this.state = 'CANCELLED';
-      return {
-        state: this.state,
-        stableGesture,
-        confidence: raw.confidence,
-        palmOrientation: raw.palmOrientation,
-        fingerStates: raw.fingerStates,
-        cursorNormalized: this.lastCursorNorm,
-        pinchDistance: raw.pinchDistance,
-        event,
-      };
+      if (stableTrigger !== mappings.REJECT_ACTION) {
+        tracker.lastScrollX = null;
+        tracker.lastScrollY = null;
+        this.state = 'CANCELLED';
+        return {
+          state: this.state,
+          stableGesture,
+          confidence: raw.confidence,
+          palmOrientation: raw.palmOrientation,
+          fingerStates: raw.fingerStates,
+          cursorNormalized: this.lastCursorNorm,
+          pinchDistance: raw.pinchDistance,
+          event,
+        };
+      }
     }
 
-    // 2. Pause trigger (default OPEN_PALM)
-    if (stableTrigger && stableTrigger === mappings.PAUSE_TRACKING) {
+    // 2. Pause trigger (default RING_PINCH; never shadows DROP_RELEASE while carrying)
+    if (
+      stableTrigger &&
+      stableTrigger === mappings.PAUSE_TRACKING &&
+      !(this.state === 'DRAGGING' && stableTrigger === mappings.DROP_RELEASE)
+    ) {
       if (
         this.state === 'DRAGGING' ||
         this.state === 'PINCH_STARTED' ||
@@ -459,6 +569,78 @@ export class GestureStateMachine {
           tracker.lastScrollX = null;
           tracker.lastScrollY = null;
           event = 'PINCH_START';
+        } else if (
+          isConfidenceAdequate &&
+          this.latchedInstantPinch === null &&
+          this.isInstantOnMeetPinchTrigger(stableTrigger, stableGesture, config) &&
+          nowMs >= this.cooldownUntil
+        ) {
+          this.latchedInstantPinch = stableGesture;
+          tracker.lastTriggeredGesture = stableGesture;
+          tracker.lastScrollX = null;
+          tracker.lastScrollY = null;
+
+          const matchesDoubleIndex =
+            mappings.DOUBLE_CLICK === 'DOUBLE_INDEX_PINCH' &&
+            stableTrigger === 'INDEX_PINCH';
+          const matchesDoubleMiddle =
+            mappings.DOUBLE_CLICK === 'DOUBLE_MIDDLE_PINCH' &&
+            stableTrigger === 'MIDDLE_PINCH';
+          const withinDoubleWindow =
+            (matchesDoubleIndex || matchesDoubleMiddle) &&
+            this.lastQuickTapMs > 0 &&
+            this.lastQuickTapTrigger === stableTrigger &&
+            nowMs - this.lastQuickTapMs <= config.doubleClickWindowMs;
+
+          if (withinDoubleWindow) {
+            this.lastQuickTapMs = 0;
+            this.lastQuickTapTrigger = null;
+            this.cooldownUntil = nowMs + Math.min(180, config.cooldownMs);
+            this.state = 'DOUBLE_CLICK';
+            event = 'DOUBLE_CLICK';
+          } else {
+            this.lastQuickTapMs = nowMs;
+            this.lastQuickTapTrigger = stableTrigger;
+            this.cooldownUntil = nowMs + Math.min(45, config.cooldownMs);
+
+            if (stableTrigger === mappings.LEFT_CLICK) {
+              if (modifiers.multiSelectActive) {
+                this.state = 'MULTI_SELECT';
+                event = 'CHOOSE_SELECT';
+              } else {
+                this.state = 'LEFT_CLICK';
+                event = 'LEFT_CLICK';
+              }
+            } else if (stableTrigger === mappings.RIGHT_CLICK) {
+              this.state = 'RIGHT_CLICK';
+              event = 'RIGHT_CLICK';
+            }
+          }
+        } else if (
+          isConfidenceAdequate &&
+          stableTrigger &&
+          (stableTrigger === mappings.GRAB_CHOOSE ||
+            (stableTrigger === mappings.DRAG_DROP &&
+              !isPinchGestureType(stableGesture))) &&
+          tracker.lastTriggeredGesture !== stableGesture &&
+          nowMs >= tracker.discreteCooldownUntil
+        ) {
+          this.state = 'DRAGGING';
+          this.activeGrabType = 'FIST';
+          this.activePinchGesture = null;
+          this.pinchFrames = 1;
+          this.releaseFrames = 0;
+          if (!this.fistAnchorOffset) {
+            this.fistAnchorOffset = {
+              x: this.lastCursorNorm.x - knuckleNorm.x,
+              y: this.lastCursorNorm.y - knuckleNorm.y,
+            };
+          }
+          tracker.lastScrollX = null;
+          tracker.lastScrollY = null;
+          tracker.lastTriggeredGesture = stableGesture;
+          tracker.discreteCooldownUntil = nowMs + Math.max(160, config.cooldownMs);
+          event = 'DRAG_START';
         } else if (stableTrigger && stableTrigger === mappings.SCROLL) {
           this.state = 'SCROLLING';
           if (tracker.lastScrollY !== null && tracker.lastScrollX !== null) {
@@ -488,6 +670,8 @@ export class GestureStateMachine {
           );
           if (
             mappedAction &&
+            !this.isInstantOnMeetPinchTrigger(stableTrigger, stableGesture, config) &&
+            this.latchedInstantPinch !== stableGesture &&
             tracker.lastTriggeredGesture !== stableGesture &&
             nowMs >= tracker.discreteCooldownUntil
           ) {
@@ -527,6 +711,7 @@ export class GestureStateMachine {
 
           if (holdThresholdMet && activeTrigger === mappings.DRAG_DROP) {
             this.state = 'DRAGGING';
+            this.activeGrabType = 'PINCH';
             event = 'DRAG_START';
           } else if (
             holdThresholdMet &&
@@ -599,12 +784,28 @@ export class GestureStateMachine {
       }
 
       case 'DRAGGING': {
-        if (isPinchActiveWithHysteresis) {
+        if (stableTrigger && stableTrigger === mappings.DROP_RELEASE) {
+          this.state = 'DROPPING';
+          this.activeGrabType = null;
+          this.fistAnchorOffset = null;
+          this.pinchFrames = 0;
+          this.releaseFrames = 0;
+          this.activePinchGesture = null;
+          this.lastQuickTapMs = 0;
+          this.lastQuickTapTrigger = null;
+          this.cooldownUntil = nowMs + config.cooldownMs;
+          tracker.lastTriggeredGesture = stableGesture;
+          event = 'DROP';
+        } else if (this.activeGrabType === 'FIST') {
+          // Stay latched carrying across all screens until OPEN_PALM drop or THUMBS_DOWN cancel
+          this.releaseFrames = 0;
+        } else if (isPinchActiveWithHysteresis) {
           this.releaseFrames = 0;
         } else {
           this.releaseFrames += 1;
           if (this.releaseFrames >= 2) {
             this.state = 'DROPPING';
+            this.activeGrabType = null;
             this.pinchFrames = 0;
             this.releaseFrames = 0;
             this.activePinchGesture = null;
@@ -643,6 +844,10 @@ export class GestureStateMachine {
       fingerStates: raw.fingerStates,
       cursorNormalized: this.lastCursorNorm,
       pinchDistance: raw.pinchDistance,
+      grabSource:
+        this.state === 'DRAGGING' || event === 'DRAG_START'
+          ? (this.activeGrabType ?? 'PINCH')
+          : undefined,
       event,
       scrollDeltaX,
       scrollDeltaY,

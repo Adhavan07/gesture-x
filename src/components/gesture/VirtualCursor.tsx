@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { FileText } from 'lucide-react';
+import { FileText, Folder, Layers } from 'lucide-react';
 import { useAppStore } from '../../stores/AppContext.tsx';
 import type { TrackingSnapshot } from '../../hooks/useHandTracking.ts';
 import type { GestureEventType } from '../../types/gesture.ts';
@@ -20,6 +20,8 @@ function getEventBadgeLabel(
       return `${prefix}Right Hold`;
     case 'CHOOSE_SELECT':
       return `${prefix}Multi-Select`;
+    case 'DRAG_START':
+      return 'Grabbed';
     case 'DROP':
       return 'Dropped';
     case 'CANCEL':
@@ -43,7 +45,8 @@ export const VirtualCursor: React.FC = () => {
     gestureState,
     twoHandModifiers,
     handDetected,
-    draggingFileId,
+    draggingItem,
+    hoveredTarget,
     files,
     pendingConfirmation,
     contextMenu,
@@ -68,7 +71,7 @@ export const VirtualCursor: React.FC = () => {
   actionStateRef.current = {
     hasConfirmable: Boolean(pendingConfirmation),
     hasCancellable: Boolean(
-      draggingFileId || contextMenu.open || previewModal.open || pendingConfirmation
+      draggingItem || contextMenu.open || previewModal.open || pendingConfirmation
     ),
     hasRejectable: Boolean(
       pendingConfirmation ||
@@ -155,9 +158,7 @@ export const VirtualCursor: React.FC = () => {
 
   if (!gestureModeEnabled || !handDetected) return null;
 
-  const draggedFile = draggingFileId
-    ? files.find((f) => f.id === draggingFileId)
-    : null;
+  const isTargetHovering = Boolean(hoveredTarget.type);
 
   const ringClass = (() => {
     if (pulseAction?.tone === 'rose') {
@@ -180,6 +181,7 @@ export const VirtualCursor: React.FC = () => {
     }
     switch (gestureState) {
       case 'DRAGGING':
+        return 'h-8 w-8 border-cyan-300 bg-cyan-400/30 scale-95';
       case 'PINCH_STARTED':
         return 'h-7 w-7 border-blue-400 bg-blue-500/30 scale-95';
       case 'RIGHT_BUTTON_HOLD':
@@ -191,7 +193,9 @@ export const VirtualCursor: React.FC = () => {
       case 'CANCELLED':
         return 'h-7 w-7 border-rose-400 bg-rose-500/25';
       default:
-        return 'h-6 w-6 border-cyan-400 bg-cyan-400/15';
+        return isTargetHovering
+          ? 'h-7 w-7 border-cyan-300 bg-cyan-400/20'
+          : 'h-6 w-6 border-cyan-400 bg-cyan-400/15';
     }
   })();
 
@@ -199,11 +203,13 @@ export const VirtualCursor: React.FC = () => {
     ? 'Cursor Frozen'
     : twoHandModifiers.multiSelectActive
       ? 'Multi-Select Mode'
-      : gestureState === 'SCROLLING'
-        ? 'Scrolling'
-        : gestureState === 'RIGHT_BUTTON_HOLD'
-          ? 'Right Hold'
-          : null;
+      : draggingItem
+        ? 'Carrying · Open Palm to Drop'
+        : gestureState === 'SCROLLING'
+          ? 'Scrolling'
+          : gestureState === 'RIGHT_BUTTON_HOLD'
+            ? 'Right Hold'
+            : null;
 
   return (
     <>
@@ -213,8 +219,16 @@ export const VirtualCursor: React.FC = () => {
         className="pointer-events-none fixed left-0 top-0 z-50 -ml-3 -mt-3 transition-opacity duration-100 will-change-transform"
       >
         <div
-          className={`flex items-center justify-center rounded-full border-2 shadow-lg transition-transform duration-100 ${ringClass}`}
+          className={`relative flex items-center justify-center rounded-full border-2 shadow-lg transition-transform duration-100 ${ringClass}`}
         >
+          {isTargetHovering || draggingItem ? (
+            <>
+              <span className="absolute -left-1.5 -top-1.5 h-2 w-2 border-l-2 border-t-2 border-cyan-300" />
+              <span className="absolute -right-1.5 -top-1.5 h-2 w-2 border-r-2 border-t-2 border-cyan-300" />
+              <span className="absolute -bottom-1.5 -left-1.5 h-2 w-2 border-b-2 border-l-2 border-cyan-300" />
+              <span className="absolute -bottom-1.5 -right-1.5 h-2 w-2 border-b-2 border-r-2 border-cyan-300" />
+            </>
+          ) : null}
           <div className="h-1.5 w-1.5 rounded-full bg-white" />
         </div>
 
@@ -224,10 +238,23 @@ export const VirtualCursor: React.FC = () => {
           </div>
         ) : null}
 
-        {draggedFile ? (
-          <div className="mt-2 ml-4 flex max-w-[200px] items-center gap-2 rounded-lg border border-cyan-400/70 bg-[#0A1222]/95 px-2.5 py-1.5 text-xs text-slate-100 shadow-xl">
-            <FileText className="h-3.5 w-3.5 shrink-0 text-cyan-300" />
-            <span className="truncate font-medium">{draggedFile.name}</span>
+        {draggingItem ? (
+          <div className="mt-2 ml-4 flex max-w-[240px] items-center gap-2 rounded-lg border border-cyan-400/75 bg-[#0A1222]/95 px-2.5 py-1.5 text-xs text-slate-100 shadow-xl">
+            {draggingItem.kind === 'folder' || draggingItem.explorerKind === 'directory' ? (
+              <Folder className="h-3.5 w-3.5 shrink-0 text-cyan-300" />
+            ) : draggingItem.kind === 'overlay' ? (
+              <Layers className="h-3.5 w-3.5 shrink-0 text-cyan-300" />
+            ) : (
+              <FileText className="h-3.5 w-3.5 shrink-0 text-cyan-300" />
+            )}
+            <div className="min-w-0">
+              <p className="truncate font-medium">{draggingItem.label}</p>
+              {hoveredTarget.label ? (
+                <p className="truncate font-mono text-[10px] text-cyan-300">
+                  Drop → {hoveredTarget.label}
+                </p>
+              ) : null}
+            </div>
           </div>
         ) : null}
       </div>

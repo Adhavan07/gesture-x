@@ -17,17 +17,17 @@ const TRIGGERS_BY_MODE: Record<
   GestureTrigger[]
 > = {
   click: [
-    'MIDDLE_PINCH',
-    'DOUBLE_MIDDLE_PINCH',
     'INDEX_PINCH',
     'DOUBLE_INDEX_PINCH',
+    'MIDDLE_PINCH',
+    'DOUBLE_MIDDLE_PINCH',
     'RING_PINCH',
     'THREE_FINGER',
     'TWO_FINGER',
     'THUMBS_UP',
     'FIST',
   ],
-  hold: ['MIDDLE_PINCH', 'INDEX_PINCH', 'RING_PINCH'],
+  hold: ['FIST', 'MIDDLE_PINCH', 'INDEX_PINCH', 'RING_PINCH'],
   continuous: ['TWO_FINGER', 'THREE_FINGER', 'OPEN_PALM'],
   control: [
     'OPEN_PALM',
@@ -115,7 +115,7 @@ export const SettingsView: React.FC = () => {
                 Auto-upload on gesture drop
               </span>
               <span className="block text-[11px] text-slate-400">
-                Immediately start uploading when a pinched file is released over the drop zone.
+                Immediately start uploading when a carried file or folder is dropped over the upload zone.
               </span>
             </div>
             <input

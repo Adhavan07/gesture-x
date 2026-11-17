@@ -138,6 +138,10 @@ export function useHandTracking(options: UseHandTrackingOptions) {
     };
   };
 
+  const completeInstantGrab = () => {
+    engineRef.current.completeInstantGrab();
+  };
+
   useEffect(() => {
     if (!enabled || !stream) {
       engineRef.current.reset();
@@ -343,5 +347,6 @@ export function useHandTracking(options: UseHandTrackingOptions) {
     modelLoading,
     modelError,
     subscribeTracking,
+    completeInstantGrab,
   };
 }

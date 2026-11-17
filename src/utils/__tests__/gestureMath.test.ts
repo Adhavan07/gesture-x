@@ -198,32 +198,100 @@ describe('gestureMath / GestureRecognizer', () => {
 });
 
 describe('VirtualMouseEngine / GestureEngine two-hand virtual mouse', () => {
-  it('transitions POINTING -> PINCH_STARTED -> DRAGGING -> DROPPING on sustained middle pinch hold', () => {
+  it('emits LEFT_CLICK immediately when Thumb+Index pinch meets, avoids repeat spam while held, and emits DOUBLE_CLICK on rapid second pinch', () => {
     const engine = new GestureEngine({
-      stabilityFrames: 2,
-      dragEngageFrames: 2,
-      dragActivationMs: 300,
-      cooldownMs: 0,
+      stabilityFrames: 1,
+      cooldownMs: 250,
+      doubleClickWindowMs: 350,
+    });
+
+    const pointing = extendIndex(makeHandLandmarks());
+    const indexPinch = makeIndexPinch();
+
+    // Aim at a UI target first -> cursor sits at mirrored index tip (0.56, 0.25)
+    const aimed = engine.processFrame(pointing, 80);
+    expect(aimed.cursorNormalized.x).toBeCloseTo(0.56, 3);
+    expect(aimed.cursorNormalized.y).toBeCloseTo(0.25, 3);
+
+    // 1st Thumb+Index meet fires LEFT_CLICK immediately (without waiting for release) and keeps aim steady
+    const click1 = engine.processFrame(indexPinch, 100);
+    expect(click1.state).toBe('LEFT_CLICK');
+    expect(click1.event).toBe('LEFT_CLICK');
+    expect(click1.cursorNormalized.x).toBeCloseTo(0.56, 3);
+    expect(click1.cursorNormalized.y).toBeCloseTo(0.25, 3);
+
+    // Holding pinch closed does NOT spam repeat LEFT_CLICK events
+    const heldStill = engine.processFrame(indexPinch, 160);
+    expect(heldStill.event).toBeUndefined();
+
+    // Separating fingers back to POINTING re-arms pinch; 2nd meet within doubleClickWindowMs fires DOUBLE_CLICK immediately
+    engine.processFrame(pointing, 190);
+    const click2 = engine.processFrame(indexPinch, 250);
+    expect(click2.state).toBe('DOUBLE_CLICK');
+    expect(click2.event).toBe('DOUBLE_CLICK');
+  });
+
+  it('emits RIGHT_CLICK immediately when Thumb+Middle pinch meets and re-arms only after release', () => {
+    const engine = new GestureEngine({
+      stabilityFrames: 1,
+      cooldownMs: 100,
     });
 
     const pointing = extendIndex(makeHandLandmarks());
     const middlePinch = makeMiddlePinch();
 
-    engine.processFrame(pointing, 100);
-    const p2 = engine.processFrame(pointing, 120);
-    expect(p2.state).toBe('POINTING');
+    engine.processFrame(pointing, 80);
 
-    engine.processFrame(middlePinch, 200);
-    const pinchStart = engine.processFrame(middlePinch, 220);
+    // Fires RIGHT_CLICK on the exact contact frame
+    const rightClick1 = engine.processFrame(middlePinch, 100);
+    expect(rightClick1.state).toBe('RIGHT_CLICK');
+    expect(rightClick1.event).toBe('RIGHT_CLICK');
+
+    // Staying pinched does not emit another RIGHT_CLICK
+    expect(engine.processFrame(middlePinch, 220).event).toBeUndefined();
+
+    // Releasing beyond releaseThreshold re-arms -> next middle pinch fires RIGHT_CLICK again
+    engine.processFrame(pointing, 250);
+    const rightClick2 = engine.processFrame(middlePinch, 300);
+    expect(rightClick2.event).toBe('RIGHT_CLICK');
+  });
+
+  it('still supports custom pinch-to-drag and right-button-hold when explicitly mapped in Settings', () => {
+    const engine = new GestureEngine({
+      stabilityFrames: 2,
+      dragEngageFrames: 2,
+      dragActivationMs: 300,
+      cooldownMs: 0,
+      mappings: {
+        GRAB_CHOOSE: 'FIST',
+        DROP_RELEASE: 'OPEN_PALM',
+        LEFT_CLICK: 'INDEX_PINCH',
+        DOUBLE_CLICK: 'DOUBLE_INDEX_PINCH',
+        RIGHT_CLICK: 'MIDDLE_PINCH',
+        CHOOSE_SELECT: 'THREE_FINGER',
+        DRAG_DROP: 'INDEX_PINCH',
+        RIGHT_BUTTON_HOLD: 'MIDDLE_PINCH',
+        SCROLL: 'TWO_FINGER',
+        PAUSE_TRACKING: 'RING_PINCH',
+        CANCEL_ACTION: 'THUMBS_DOWN',
+        CONFIRM_ACTION: 'THUMBS_UP',
+        REJECT_ACTION: 'THUMBS_DOWN',
+      },
+    });
+
+    const pointing = extendIndex(makeHandLandmarks());
+    const indexPinch = makeIndexPinch();
+    const middlePinch = makeMiddlePinch();
+
+    engine.processFrame(pointing, 100);
+    engine.processFrame(pointing, 120);
+
+    engine.processFrame(indexPinch, 200);
+    const pinchStart = engine.processFrame(indexPinch, 220);
     expect(pinchStart.state).toBe('PINCH_STARTED');
     expect(pinchStart.event).toBe('PINCH_START');
 
-    // Before dragActivationMs elapses, remains in PINCH_STARTED
-    const beforeHold = engine.processFrame(middlePinch, 400);
-    expect(beforeHold.state).toBe('PINCH_STARTED');
-
-    // After dragActivationMs (220 + 320 = 540 >= 300ms elapsed), transitions to DRAGGING
-    const dragStart = engine.processFrame(middlePinch, 540);
+    const dragStart = engine.processFrame(indexPinch, 540);
     expect(dragStart.state).toBe('DRAGGING');
     expect(dragStart.event).toBe('DRAG_START');
 
@@ -231,58 +299,12 @@ describe('VirtualMouseEngine / GestureEngine two-hand virtual mouse', () => {
     const drop = engine.processFrame(pointing, 620);
     expect(drop.state).toBe('DROPPING');
     expect(drop.event).toBe('DROP');
-  });
 
-  it('emits LEFT_CLICK on quick middle-pinch tap and DOUBLE_CLICK on rapid second middle-pinch', () => {
-    const engine = new GestureEngine({
-      stabilityFrames: 1,
-      dragEngageFrames: 4,
-      dragActivationMs: 300,
-      cooldownMs: 250,
-      doubleClickWindowMs: 350,
-    });
-
-    const pointing = extendIndex(makeHandLandmarks());
-    const middlePinch = makeMiddlePinch();
-
-    // First quick tap (< 300ms hold) releases on first clean POINTING frame
-    const start1 = engine.processFrame(middlePinch, 100);
-    expect(start1.event).toBe('PINCH_START');
-    const tap1 = engine.processFrame(pointing, 130);
-    expect(tap1.event).toBe('LEFT_CLICK');
-
-    // Second quick tap within doubleClickWindowMs (350ms from 130)
-    const start2 = engine.processFrame(middlePinch, 320);
-    expect(start2.event).toBe('PINCH_START');
-    const tap2 = engine.processFrame(pointing, 340);
-    expect(tap2.event).toBe('DOUBLE_CLICK');
-  });
-
-  it('emits RIGHT_CLICK on quick index-pinch tap and RIGHT_BUTTON_HOLD on sustained index-pinch hold', () => {
-    const engine = new GestureEngine({
-      stabilityFrames: 1,
-      dragEngageFrames: 2,
-      dragActivationMs: 300,
-      cooldownMs: 0,
-    });
-
-    const pointing = extendIndex(makeHandLandmarks());
-    const indexPinch = makeIndexPinch();
-
-    // Quick index-pinch tap -> RIGHT_CLICK on first clean release frame
-    engine.processFrame(indexPinch, 100);
-    const quickRight = engine.processFrame(pointing, 130);
-    expect(quickRight.event).toBe('RIGHT_CLICK');
-
-    // Sustained index-pinch hold -> RIGHT_BUTTON_HOLD -> release emits RIGHT_CLICK
-    engine.processFrame(indexPinch, 300);
-    const held = engine.processFrame(indexPinch, 650);
-    expect(held.state).toBe('RIGHT_BUTTON_HOLD');
-    expect(held.event).toBe('RIGHT_HOLD_START');
-
-    engine.processFrame(pointing, 700);
-    const released = engine.processFrame(pointing, 720);
-    expect(released.event).toBe('RIGHT_CLICK');
+    engine.processFrame(middlePinch, 700);
+    engine.processFrame(middlePinch, 720);
+    const rightHold = engine.processFrame(middlePinch, 1060);
+    expect(rightHold.state).toBe('RIGHT_BUTTON_HOLD');
+    expect(rightHold.event).toBe('RIGHT_HOLD_START');
   });
 
   it('supports 2D vertical and horizontal scroll on TWO_FINGER', () => {
@@ -326,6 +348,8 @@ describe('VirtualMouseEngine / GestureEngine two-hand virtual mouse', () => {
     const engine = new GestureEngine({
       stabilityFrames: 1,
       mappings: {
+        GRAB_CHOOSE: 'FIST',
+        DROP_RELEASE: 'OPEN_PALM',
         LEFT_CLICK: 'INDEX_PINCH',
         DOUBLE_CLICK: 'RING_PINCH',
         RIGHT_CLICK: 'THREE_FINGER',
@@ -347,26 +371,73 @@ describe('VirtualMouseEngine / GestureEngine two-hand virtual mouse', () => {
     expect(engine.processFrame(ringPinch, 700).event).toBe('DOUBLE_CLICK');
   });
 
-  it('cancels active drag on FIST gesture and pauses on OPEN_PALM', () => {
+  it('grabs with FIST (zero-jump knuckle anchor), stays latched, and drops on OPEN_PALM', () => {
     const engine = new GestureEngine({
       stabilityFrames: 1,
-      dragEngageFrames: 2,
-      dragActivationMs: 100,
       cooldownMs: 0,
     });
-    const middlePinch = makeMiddlePinch();
+
+    const pointing = extendIndex(makeHandLandmarks());
     const fist = makeHandLandmarks();
+    const movedFist = shiftLandmarks(fist, -0.1, -0.05);
     const palm = extendAllFingers();
 
-    engine.processFrame(middlePinch, 100);
-    engine.processFrame(middlePinch, 250);
+    // Pointing places cursor at mirrored index tip (1 - 0.44 = 0.56, y = 0.25)
+    const p = engine.processFrame(pointing, 100);
+    expect(p.state).toBe('POINTING');
+    expect(p.cursorNormalized.x).toBeCloseTo(0.56, 3);
+    expect(p.cursorNormalized.y).toBeCloseTo(0.25, 3);
+
+    // Closing into FIST initiates DRAG_START with zero jump at grab frame
+    const grabbed = engine.processFrame(fist, 200);
+    expect(grabbed.state).toBe('DRAGGING');
+    expect(grabbed.event).toBe('DRAG_START');
+    expect(grabbed.grabSource).toBe('FIST');
+    expect(grabbed.cursorNormalized.x).toBeCloseTo(0.56, 3);
+    expect(grabbed.cursorNormalized.y).toBeCloseTo(0.25, 3);
+
+    // Moving FIST moves cursor smoothly by knuckle delta (mirrored dx=-0.1 -> +0.1, dy=-0.05)
+    const carried = engine.processFrame(movedFist, 240);
+    expect(carried.state).toBe('DRAGGING');
+    expect(carried.cursorNormalized.x).toBeCloseTo(0.66, 3);
+    expect(carried.cursorNormalized.y).toBeCloseTo(0.2, 3);
+
+    // Stays latched even if fingers briefly relax to POINTING while carrying
+    const transientPoint = engine.processFrame(extendIndex(movedFist), 280);
+    expect(transientPoint.state).toBe('DRAGGING');
+
+    // OPEN_PALM drops cleanly and freezes coordinates
+    const dropped = engine.processFrame(palm, 320);
+    expect(dropped.state).toBe('DROPPING');
+    expect(dropped.event).toBe('DROP');
+    expect(dropped.cursorNormalized.x).toBeCloseTo(0.66, 3);
+    expect(dropped.cursorNormalized.y).toBeCloseTo(0.2, 3);
+
+    // completeInstantGrab() exits DRAGGING immediately for UI controls
+    engine.processFrame(pointing, 500);
+    const secondGrab = engine.processFrame(fist, 650);
+    expect(secondGrab.state).toBe('DRAGGING');
+    engine.completeInstantGrab();
+    expect(engine.getState()).toBe('IDLE');
+  });
+
+  it('cancels active FIST drag on THUMBS_DOWN and pauses on RING_PINCH by default', () => {
+    const engine = new GestureEngine({
+      stabilityFrames: 1,
+      cooldownMs: 0,
+    });
+    const fist = makeHandLandmarks();
+    const thumbsDown = makeThumbsDown();
+    const ringPinch = makeRingPinch();
+
+    engine.processFrame(fist, 100);
     expect(engine.getState()).toBe('DRAGGING');
 
-    const cancelled = engine.processFrame(fist, 300);
+    const cancelled = engine.processFrame(thumbsDown, 300);
     expect(cancelled.state).toBe('CANCELLED');
     expect(cancelled.event).toBe('CANCEL');
 
-    const paused = engine.processFrame(palm, 400);
+    const paused = engine.processFrame(ringPinch, 400);
     expect(paused.state).toBe('PAUSED');
   });
 
@@ -383,7 +454,7 @@ describe('VirtualMouseEngine / GestureEngine two-hand virtual mouse', () => {
     const leftFist = makeHandLandmarks();
     const leftPinch = makeIndexPinch();
     const leftPalm = extendAllFingers();
-    const rightMiddlePinch = makeMiddlePinch();
+    const rightPinch = makeIndexPinch();
     const rightPalm = extendAllFingers();
     const rightFist = makeHandLandmarks();
 
@@ -412,26 +483,16 @@ describe('VirtualMouseEngine / GestureEngine two-hand virtual mouse', () => {
     expect(frozen.modifiers.cursorFrozen).toBe(true);
     expect(frozen.cursorNormalized).toEqual(baseline.cursorNormalized);
 
-    // 2. Secondary thumb-index pinch activates Ctrl-style multi-select hold (middle pinch quick tap fires CHOOSE_SELECT)
-    const holdStart = engine.processDualHandFrame(
+    // 2. Secondary thumb-index pinch activates Ctrl-style multi-select hold (primary index pinch meet fires CHOOSE_SELECT immediately)
+    const multiTap = engine.processDualHandFrame(
       [
         { landmarks: leftPinch, handedness: 'Left' },
-        { landmarks: rightMiddlePinch, handedness: 'Right' },
+        { landmarks: rightPinch, handedness: 'Right' },
       ],
       300,
       true
     );
-    expect(holdStart.modifiers.multiSelectActive).toBe(true);
-    expect(holdStart.event).toBe('PINCH_START');
-
-    const multiTap = engine.processDualHandFrame(
-      [
-        { landmarks: leftPinch, handedness: 'Left' },
-        { landmarks: rightPoint1, handedness: 'Right' },
-      ],
-      330,
-      true
-    );
+    expect(multiTap.modifiers.multiSelectActive).toBe(true);
     expect(multiTap.event).toBe('CHOOSE_SELECT');
     expect(multiTap.state).toBe('MULTI_SELECT');
 

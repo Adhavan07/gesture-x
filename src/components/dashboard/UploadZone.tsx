@@ -11,15 +11,20 @@ export const UploadZone: React.FC = () => {
     openGestureExplorer,
     openContextMenu,
     hoveredTarget,
-    draggingFileId,
+    draggingItem,
     settings,
   } = useAppStore();
 
   const [nativeDragOver, setNativeDragOver] = useState(false);
 
+  const isCarryingWorkspaceItem =
+    draggingItem?.kind === 'file' || draggingItem?.kind === 'folder';
   const isGestureDropTargeted =
-    hoveredTarget.type === 'dropzone' && Boolean(draggingFileId);
-  const isGestureHovering = hoveredTarget.type === 'dropzone';
+    hoveredTarget.type === 'dropzone' &&
+    hoveredTarget.id === 'upload' &&
+    isCarryingWorkspaceItem;
+  const isGestureHovering =
+    hoveredTarget.type === 'dropzone' && hoveredTarget.id === 'upload';
 
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -84,7 +89,7 @@ export const UploadZone: React.FC = () => {
           <div>
             <h2 className="font-display text-base font-semibold text-slate-100">
               {isGestureDropTargeted
-                ? 'Release pinch to stage file for upload'
+                ? 'Open palm or release pinch to stage for upload'
                 : 'Drop files or folders here'}
             </h2>
             <p className="mt-1 text-xs text-slate-400">

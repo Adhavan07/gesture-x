@@ -16,6 +16,7 @@ import type {
 } from '../types/files.ts';
 import {
   DEFAULT_GESTURE_MAPPINGS,
+  GESTURE_MAPPING_VERSION,
   GESTURE_PRESETS,
   GESTURE_TRIGGER_LABELS,
   MOUSE_ACTION_META,
@@ -42,6 +43,7 @@ import type {
   AppNotification,
   ContextMenuState,
   CursorHoverTarget,
+  DraggedItemState,
   NavTab,
   PendingConfirmation,
   PreviewModalState,
@@ -52,6 +54,7 @@ import {
   buildExplorerTreeFromFiles,
   createFileItemsFromFiles,
   deriveFolderGroups,
+  readDirectoryChildren,
   requestDirectoryHandle,
   revokeFilePreview,
 } from '../services/fileService.ts';
@@ -99,6 +102,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   multiHandEnabled: true,
   preferredPointerHand: 'auto',
   gestureMappings: { ...DEFAULT_GESTURE_MAPPINGS },
+  gestureMappingVersion: GESTURE_MAPPING_VERSION,
 };
 
 const DEFAULT_MODIFIERS: TwoHandModifierState = {
@@ -169,6 +173,9 @@ export interface AppContextValue {
   requestRemoveSelected: () => void;
   requestClearAllFiles: () => void;
   moveFileToFolder: (fileId: string, folderId: string) => void;
+  moveFileOutOfFolder: (fileId: string) => void;
+  moveFolderToFolder: (sourceFolderId: string, targetFolderId: string) => void;
+  reorderFileInQueue: (sourceFileId: string, targetFileId: string) => void;
   uploadSingleFile: (fileId: string) => Promise<void>;
   uploadSelectedFiles: () => Promise<void>;
   uploadAllFiles: () => Promise<void>;
@@ -204,6 +211,7 @@ export interface AppContextValue {
   pinchDistance: number;
   hoveredTarget: CursorHoverTarget;
   draggingFileId: string | null;
+  draggingItem: DraggedItemState | null;
   toggleGestureMode: () => Promise<void>;
   retryCamera: () => Promise<void>;
   pauseGestureMode: () => void;
@@ -277,6 +285,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       if (!saved) return DEFAULT_SETTINGS;
       const parsed = JSON.parse(saved) as Partial<AppSettings>;
       const rawMappings = (parsed.gestureMappings ?? {}) as Record<string, string>;
+      const savedVersion =
+        typeof parsed.gestureMappingVersion === 'number'
+          ? parsed.gestureMappingVersion
+          : 1;
+      const isLegacyPreArVr = !('GRAB_CHOOSE' in rawMappings);
+      const isPreV2ClickDefault = savedVersion < GESTURE_MAPPING_VERSION;
       const migratedMappings: GestureMappingConfig = {
         ...DEFAULT_GESTURE_MAPPINGS,
       };
@@ -289,11 +303,44 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
           migratedMappings[k] = val as GestureTrigger;
         }
       });
-      return {
+
+      if (isLegacyPreArVr || isPreV2ClickDefault) {
+        migratedMappings.GRAB_CHOOSE = DEFAULT_GESTURE_MAPPINGS.GRAB_CHOOSE;
+        migratedMappings.DROP_RELEASE = DEFAULT_GESTURE_MAPPINGS.DROP_RELEASE;
+        migratedMappings.LEFT_CLICK = DEFAULT_GESTURE_MAPPINGS.LEFT_CLICK;
+        migratedMappings.DOUBLE_CLICK = DEFAULT_GESTURE_MAPPINGS.DOUBLE_CLICK;
+        migratedMappings.RIGHT_CLICK = DEFAULT_GESTURE_MAPPINGS.RIGHT_CLICK;
+        migratedMappings.DRAG_DROP = DEFAULT_GESTURE_MAPPINGS.DRAG_DROP;
+        migratedMappings.RIGHT_BUTTON_HOLD =
+          DEFAULT_GESTURE_MAPPINGS.RIGHT_BUTTON_HOLD;
+        if (
+          !rawMappings.PAUSE_TRACKING ||
+          rawMappings.PAUSE_TRACKING === 'OPEN_PALM'
+        ) {
+          migratedMappings.PAUSE_TRACKING = DEFAULT_GESTURE_MAPPINGS.PAUSE_TRACKING;
+        }
+        if (
+          !rawMappings.CANCEL_ACTION ||
+          rawMappings.CANCEL_ACTION === 'FIST'
+        ) {
+          migratedMappings.CANCEL_ACTION = DEFAULT_GESTURE_MAPPINGS.CANCEL_ACTION;
+        }
+      }
+
+      const upgraded: AppSettings = {
         ...DEFAULT_SETTINGS,
         ...parsed,
         gestureMappings: migratedMappings,
+        gestureMappingVersion: GESTURE_MAPPING_VERSION,
       };
+      if (isPreV2ClickDefault) {
+        try {
+          localStorage.setItem('gesturex_settings', JSON.stringify(upgraded));
+        } catch {
+          // Ignore storage error
+        }
+      }
+      return upgraded;
     } catch {
       return DEFAULT_SETTINGS;
     }
@@ -318,7 +365,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     type: null,
     id: null,
   });
-  const [draggingFileId, setDraggingFileId] = useState<string | null>(null);
+  const [draggingItem, setDraggingItem] = useState<DraggedItemState | null>(null);
+  const draggingFileId =
+    draggingItem?.kind === 'file' ? draggingItem.id : null;
 
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(CLOSED_CONTEXT_MENU);
   const [previewModal, setPreviewModal] = useState<PreviewModalState>(CLOSED_PREVIEW_MODAL);
@@ -346,11 +395,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
   const filesRef = useRef<FileItem[]>(files);
   filesRef.current = files;
 
+  const activeTabRef = useRef<NavTab>(activeTab);
+  activeTabRef.current = activeTab;
+
+  const explorerRootRef = useRef<ExplorerNode | null>(explorerRoot);
+  explorerRootRef.current = explorerRoot;
+
   const hoveredTargetRef = useRef<CursorHoverTarget>(hoveredTarget);
   hoveredTargetRef.current = hoveredTarget;
 
-  const draggingFileIdRef = useRef<string | null>(draggingFileId);
-  draggingFileIdRef.current = draggingFileId;
+  const draggingItemRef = useRef<DraggedItemState | null>(draggingItem);
+  draggingItemRef.current = draggingItem;
 
   const pendingConfirmationRef = useRef<PendingConfirmation | null>(pendingConfirmation);
   pendingConfirmationRef.current = pendingConfirmation;
@@ -360,6 +415,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const previewModalRef = useRef<PreviewModalState>(previewModal);
   previewModalRef.current = previewModal;
+
+  const completeInstantGrabRef = useRef<() => void>(() => undefined);
 
   const folders = useMemo(() => deriveFolderGroups(files), [files]);
   const selectedCount = useMemo(
@@ -445,6 +502,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       const next: AppSettings = {
         ...prev,
         ...partial,
+        gestureMappingVersion: GESTURE_MAPPING_VERSION,
         gestureMappings: partial.gestureMappings
           ? { ...prev.gestureMappings, ...partial.gestureMappings }
           : prev.gestureMappings,
@@ -488,6 +546,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
         nextMappings[action] = trigger;
         const next: AppSettings = {
           ...prev,
+          gestureMappingVersion: GESTURE_MAPPING_VERSION,
           gestureMappings: nextMappings,
         };
         try {
@@ -531,6 +590,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
   const resetGestureMappings = useCallback(() => {
     updateSettings({
       gestureMappings: { ...DEFAULT_GESTURE_MAPPINGS },
+      gestureMappingVersion: GESTURE_MAPPING_VERSION,
       cursorSmoothing: 0.25,
       pinchThreshold: 0.30,
       releaseThreshold: 0.45,
@@ -771,7 +831,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const moveFileToFolder = useCallback(
     (fileId: string, folderId: string) => {
-      const targetFolder = folders.find((fld) => fld.id === folderId);
+      const currentFolders = deriveFolderGroups(filesRef.current);
+      const targetFolder = currentFolders.find((fld) => fld.id === folderId);
       if (!targetFolder) return;
       setFiles((prev) =>
         prev.map((f) =>
@@ -787,7 +848,139 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       );
       recordAction(`Moved file into folder ${targetFolder.name}`);
     },
-    [folders, recordAction]
+    [recordAction]
+  );
+
+  const moveFileOutOfFolder = useCallback(
+    (fileId: string) => {
+      const target = filesRef.current.find((f) => f.id === fileId);
+      setFiles((prev) =>
+        prev.map((f) =>
+          f.id === fileId
+            ? {
+                ...f,
+                folderId: null,
+                folderName: null,
+                relativePath: f.name,
+              }
+            : f
+        )
+      );
+      if (target) {
+        recordAction(`Moved ${target.name} to workspace root`);
+      }
+    },
+    [recordAction]
+  );
+
+  const moveFolderToFolder = useCallback(
+    (sourceFolderId: string, targetFolderId: string) => {
+      if (sourceFolderId === targetFolderId) return;
+      const currentFolders = deriveFolderGroups(filesRef.current);
+      const sourceFolder = currentFolders.find((fld) => fld.id === sourceFolderId);
+      const targetFolder = currentFolders.find((fld) => fld.id === targetFolderId);
+      if (!sourceFolder || !targetFolder) return;
+      setFiles((prev) =>
+        prev.map((f) =>
+          f.folderId === sourceFolderId
+            ? {
+                ...f,
+                folderId: targetFolder.id,
+                folderName: targetFolder.name,
+                relativePath: `${targetFolder.name}/${f.name}`,
+              }
+            : f
+        )
+      );
+      recordAction(`Moved folder ${sourceFolder.name} into ${targetFolder.name}`);
+      pushNotification(
+        'info',
+        'Folder moved',
+        `Merged ${sourceFolder.fileIds.length} file(s) from "${sourceFolder.name}" into "${targetFolder.name}".`
+      );
+    },
+    [pushNotification, recordAction]
+  );
+
+  const reorderFileInQueue = useCallback(
+    (sourceFileId: string, targetFileId: string) => {
+      if (sourceFileId === targetFileId) return;
+      setFiles((prev) => {
+        const fromIdx = prev.findIndex((f) => f.id === sourceFileId);
+        const toIdx = prev.findIndex((f) => f.id === targetFileId);
+        if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return prev;
+        const next = [...prev];
+        const [moved] = next.splice(fromIdx, 1);
+        next.splice(toIdx, 0, moved);
+        return next;
+      });
+      const movedItem = filesRef.current.find((f) => f.id === sourceFileId);
+      if (movedItem) {
+        recordAction(`Moved ${movedItem.name} in queue`);
+      }
+    },
+    [recordAction]
+  );
+
+  const stageExplorerPath = useCallback(
+    async (explorerPath: string) => {
+      const root =
+        explorerRootRef.current ??
+        (filesRef.current.length > 0
+          ? buildExplorerTreeFromFiles(
+              filesRef.current.map((f) => ({
+                file: f.file,
+                relativePath: f.relativePath || f.name,
+              })),
+              'Staged Workspace'
+            )
+          : null);
+      if (!root) return;
+
+      let matchedNode: ExplorerNode | null = null;
+      const findNode = (node: ExplorerNode) => {
+        if (node.path === explorerPath) {
+          matchedNode = node;
+          return;
+        }
+        node.children?.forEach(findNode);
+      };
+      findNode(root);
+
+      const resolvedNode = matchedNode as ExplorerNode | null;
+      if (!resolvedNode) return;
+
+      const collected: Array<{ file: File; relativePath?: string }> = [];
+      const collectNode = async (node: ExplorerNode) => {
+        if (node.kind === 'file') {
+          if (node.file) {
+            collected.push({ file: node.file, relativePath: node.path });
+          } else if (node.fileHandle) {
+            const file = await node.fileHandle.getFile();
+            collected.push({ file, relativePath: node.path });
+          }
+          return;
+        }
+        const children =
+          node.children ??
+          (node.dirHandle
+            ? await readDirectoryChildren(node.dirHandle, node.path)
+            : []);
+        for (const child of children) {
+          await collectNode(child);
+        }
+      };
+
+      await collectNode(resolvedNode);
+      if (collected.length > 0) {
+        await addFiles(collected);
+        setExplorerOpen(false);
+        recordAction(
+          `Dropped ${resolvedNode.name} (${collected.length} file${collected.length > 1 ? 's' : ''}) into Workspace`
+        );
+      }
+    },
+    [addFiles, recordAction]
   );
 
   const runUploadBatch = useCallback(
@@ -1167,12 +1360,56 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     actionEl?.click();
   }, []);
 
+  const activateDomActionTarget = useCallback(
+    (target: CursorHoverTarget, x: number, y: number): boolean => {
+      const osPickerActionIds = new Set([
+        'browse-files',
+        'browse-folders',
+        'empty-select-files',
+        'ctx-browse-files',
+        'ctx-browse-folders',
+        'open-gesture-explorer',
+      ]);
+      const selectedExists = filesRef.current.some((f) => f.selected);
+      if (
+        (target.id && osPickerActionIds.has(target.id)) ||
+        (target.id === 'primary-upload' && !selectedExists)
+      ) {
+        openGestureExplorer();
+        return true;
+      }
+
+      if (target.id === '__dom__' && typeof document !== 'undefined') {
+        const elements = document.elementsFromPoint(x, y);
+        for (const el of elements) {
+          if (!(el instanceof HTMLElement)) continue;
+          const interactiveEl = el.closest<HTMLElement>(
+            'button:not(:disabled), [role="menuitem"], [role="button"], a[href]'
+          );
+          if (interactiveEl) {
+            interactiveEl.click();
+            return true;
+          }
+        }
+        return false;
+      }
+
+      if (target.id) {
+        triggerDomActionElement(target.id);
+        return true;
+      }
+
+      return false;
+    },
+    [openGestureExplorer, triggerDomActionElement]
+  );
+
   const handlePinchStart = useCallback((_target: CursorHoverTarget) => {
     // Pinch start anchors cursor & enters PINCH_STARTED; discrete click waits for quick tap release
   }, []);
 
   const handleLeftClick = useCallback(
-    (target: CursorHoverTarget, _x: number, _y: number) => {
+    (target: CursorHoverTarget, x: number, y: number) => {
       const isCtxMenuItem = Boolean(target.id?.startsWith('ctx-'));
       if (contextMenuRef.current.open && !isCtxMenuItem) {
         setContextMenu(CLOSED_CONTEXT_MENU);
@@ -1180,26 +1417,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       }
 
       if (target.type === 'action' && target.id) {
-        // Browsers forbid opening native <input type="file"> dialogs from non-hardware RAF events.
-        // Route file/folder picker actions into the in-app Gesture File Explorer instead.
-        const osPickerActionIds = new Set([
-          'browse-files',
-          'browse-folders',
-          'empty-select-files',
-          'ctx-browse-files',
-          'ctx-browse-folders',
-          'open-gesture-explorer',
-        ]);
-        const selectedExists = filesRef.current.some((f) => f.selected);
-        if (
-          osPickerActionIds.has(target.id) ||
-          (target.id === 'primary-upload' && !selectedExists)
-        ) {
-          openGestureExplorer();
-          return;
-        }
-
-        triggerDomActionElement(target.id);
+        activateDomActionTarget(target, x, y);
         recordAction(`Left Click: ${target.label || target.id}`);
       } else if (target.type === 'file' && target.id) {
         toggleFileSelection(target.id);
@@ -1208,11 +1426,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       }
     },
     [
-      openGestureExplorer,
+      activateDomActionTarget,
       recordAction,
       selectFolder,
       toggleFileSelection,
-      triggerDomActionElement,
     ]
   );
 
@@ -1222,7 +1439,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
         toggleFileSelection(target.id);
       } else if (target.type === 'folder' && target.id) {
         selectFolder(target.id);
-      } else if (target.type === 'action' && target.id) {
+      } else if (target.type === 'action' && target.id && target.id !== '__dom__') {
         triggerDomActionElement(target.id);
       }
     },
@@ -1230,7 +1447,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
   );
 
   const handleDoubleClick = useCallback(
-    (target: CursorHoverTarget, _x: number, _y: number) => {
+    (target: CursorHoverTarget, x: number, y: number) => {
       setContextMenu(CLOSED_CONTEXT_MENU);
       if (target.type === 'file' && target.id) {
         selectFile(target.id);
@@ -1238,19 +1455,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       } else if (target.type === 'folder' && target.id) {
         openFolderPreview(target.id);
       } else if (target.type === 'dropzone') {
-        openFilePicker();
-        recordAction('Double Click: Opened file picker');
+        openGestureExplorer();
+        recordAction('Double Click: Opened Gesture Explorer');
       } else if (target.type === 'action' && target.id) {
-        triggerDomActionElement(target.id);
+        activateDomActionTarget(target, x, y);
       }
     },
     [
-      openFilePicker,
+      activateDomActionTarget,
       openFilePreview,
       openFolderPreview,
+      openGestureExplorer,
       recordAction,
       selectFile,
-      triggerDomActionElement,
     ]
   );
 
@@ -1293,52 +1510,270 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     [openContextMenu]
   );
 
-  const handleDragStart = useCallback((target: CursorHoverTarget) => {
-    setContextMenu(CLOSED_CONTEXT_MENU);
-    if (target.type === 'file' && target.id) {
-      setDraggingFileId(target.id);
-    }
-  }, []);
+  const handleDragStart = useCallback(
+    (
+      target: CursorHoverTarget,
+      x: number,
+      y: number,
+      grabSource: 'FIST' | 'PINCH' = 'PINCH'
+    ) => {
+      const isCtxMenuItem = Boolean(target.id?.startsWith('ctx-'));
+      if (contextMenuRef.current.open && !isCtxMenuItem) {
+        setContextMenu(CLOSED_CONTEXT_MENU);
+      }
+
+      if (target.type === 'file' && target.id) {
+        const fileItem = filesRef.current.find((f) => f.id === target.id);
+        if (!fileItem) {
+          completeInstantGrabRef.current();
+          return;
+        }
+        const selectedFiles = filesRef.current.filter((f) => f.selected);
+        const batchCount =
+          fileItem.selected && selectedFiles.length > 1 ? selectedFiles.length : 1;
+        setDraggingItem({
+          kind: 'file',
+          id: target.id,
+          label:
+            batchCount > 1 ? `${fileItem.name} (+${batchCount - 1})` : fileItem.name,
+          count: batchCount,
+          grabSource,
+          startX: x,
+          startY: y,
+        });
+        recordAction(
+          `Grabbed ${fileItem.name} (${grabSource === 'FIST' ? 'Closed Fist' : 'Pinch'})`
+        );
+        return;
+      }
+
+      if (target.type === 'folder' && target.id) {
+        const folder = deriveFolderGroups(filesRef.current).find(
+          (fld) => fld.id === target.id
+        );
+        if (!folder) {
+          completeInstantGrabRef.current();
+          return;
+        }
+        setDraggingItem({
+          kind: 'folder',
+          id: target.id,
+          label: folder.name,
+          count: folder.fileIds.length,
+          grabSource,
+          startX: x,
+          startY: y,
+        });
+        recordAction(
+          `Grabbed folder ${folder.name} (${grabSource === 'FIST' ? 'Closed Fist' : 'Pinch'})`
+        );
+        return;
+      }
+
+      if (target.type === 'overlay' && target.id) {
+        setDraggingItem({
+          kind: 'overlay',
+          id: target.id,
+          label: target.label || 'Floating Overlay',
+          grabSource,
+          startX: x,
+          startY: y,
+        });
+        recordAction(`Grabbed overlay: ${target.label || target.id}`);
+        return;
+      }
+
+      if (target.type === 'action' && target.explorerPath) {
+        setDraggingItem({
+          kind: 'explorer-node',
+          id: target.id ?? target.explorerPath,
+          label: target.label || 'Explorer Item',
+          explorerPath: target.explorerPath,
+          explorerKind: target.explorerKind ?? 'file',
+          grabSource,
+          startX: x,
+          startY: y,
+        });
+        recordAction(`Grabbed ${target.label || 'item'} in Explorer`);
+        return;
+      }
+
+      if (target.type === 'action') {
+        if (grabSource === 'FIST') {
+          if (isCtxMenuItem) {
+            setContextMenu(CLOSED_CONTEXT_MENU);
+          }
+          activateDomActionTarget(target, x, y);
+          recordAction(`Fist Choose: ${target.label || target.id || 'Control'}`);
+          completeInstantGrabRef.current();
+        }
+        return;
+      }
+
+      // Empty space or dropzone: do not latch an empty fist drag
+      if (grabSource === 'FIST') {
+        completeInstantGrabRef.current();
+      }
+    },
+    [activateDomActionTarget, recordAction]
+  );
 
   const handleDrop = useCallback(
-    (target: CursorHoverTarget) => {
-      const draggedId = draggingFileIdRef.current;
-      setDraggingFileId(null);
+    (target: CursorHoverTarget, x: number, y: number) => {
+      const dragged = draggingItemRef.current;
+      setDraggingItem(null);
 
-      if (!draggedId) return;
+      if (!dragged) return;
 
-      if (target.type === 'dropzone') {
-        selectFile(draggedId);
-        const item = filesRef.current.find((f) => f.id === draggedId);
-        if (item && settings.autoUploadOnDrop) {
-          void runUploadBatch([item]);
-        } else if (item) {
+      if (dragged.kind === 'overlay') {
+        recordAction(`Dropped ${dragged.label} at (${Math.round(x)}, ${Math.round(y)})`);
+        return;
+      }
+
+      if (dragged.kind === 'explorer-node') {
+        const movedDist = Math.hypot(x - dragged.startX, y - dragged.startY);
+        if (
+          movedDist < 32 &&
+          target.type === 'action' &&
+          target.explorerPath === dragged.explorerPath
+        ) {
+          activateDomActionTarget(target, x, y);
+          recordAction(`Chose ${dragged.label} in Explorer`);
+          return;
+        }
+        if (dragged.explorerPath) {
+          void stageExplorerPath(dragged.explorerPath);
+        }
+        return;
+      }
+
+      if (dragged.kind === 'file') {
+        const draggedFile = filesRef.current.find((f) => f.id === dragged.id);
+        if (!draggedFile) return;
+
+        const selectedFiles = filesRef.current.filter((f) => f.selected);
+        const movingFiles =
+          draggedFile.selected && selectedFiles.length > 1
+            ? selectedFiles
+            : [draggedFile];
+
+        if (target.type === 'folder' && target.id) {
+          movingFiles.forEach((f) => moveFileToFolder(f.id, target.id!));
           pushNotification(
             'success',
-            'Staged for upload',
-            `${item.name} was dropped onto the Upload Zone and selected.`
+            'Moved into folder',
+            `${movingFiles.length} file(s) moved into "${target.label || 'Folder'}".`
           );
-          recordAction(`Dropped ${item.name} onto upload zone`);
+          return;
         }
-      } else if (target.type === 'folder' && target.id) {
-        moveFileToFolder(draggedId, target.id);
-      } else {
-        recordAction('Drop cancelled outside valid target');
+
+        if (target.type === 'dropzone' && target.id === 'queue-root') {
+          movingFiles.forEach((f) => moveFileOutOfFolder(f.id));
+          pushNotification(
+            'info',
+            'Moved to workspace root',
+            `${movingFiles.length} file(s) moved out of folder.`
+          );
+          return;
+        }
+
+        if (target.type === 'dropzone') {
+          movingFiles.forEach((f) => selectFile(f.id));
+          if (settings.autoUploadOnDrop) {
+            void runUploadBatch(movingFiles);
+          } else {
+            pushNotification(
+              'success',
+              'Staged for upload',
+              `${movingFiles.length > 1 ? `${movingFiles.length} files` : draggedFile.name} dropped onto Upload Zone.`
+            );
+            recordAction(`Dropped ${dragged.label} onto upload zone`);
+          }
+          return;
+        }
+
+        if (target.type === 'file' && target.id && target.id !== dragged.id) {
+          reorderFileInQueue(dragged.id, target.id);
+          return;
+        }
+
+        if (
+          target.type === 'action' &&
+          (target.id === 'nav-dashboard' || target.id === 'nav-files')
+        ) {
+          const nextTab: NavTab = target.id === 'nav-files' ? 'files' : 'dashboard';
+          setActiveTab(nextTab);
+          movingFiles.forEach((f) => selectFile(f.id));
+          recordAction(`Moved ${dragged.label} to ${nextTab} screen`);
+          return;
+        }
+
+        movingFiles.forEach((f) => selectFile(f.id));
+        recordAction(`Dropped ${dragged.label} on ${activeTabRef.current} screen`);
+        return;
+      }
+
+      if (dragged.kind === 'folder') {
+        const folderFiles = filesRef.current.filter((f) => f.folderId === dragged.id);
+        if (target.type === 'folder' && target.id && target.id !== dragged.id) {
+          moveFolderToFolder(dragged.id, target.id);
+          return;
+        }
+
+        if (target.type === 'dropzone' && target.id === 'queue-root') {
+          folderFiles.forEach((f) => moveFileOutOfFolder(f.id));
+          recordAction(`Ungrouped folder ${dragged.label} to workspace root`);
+          return;
+        }
+
+        if (target.type === 'dropzone') {
+          folderFiles.forEach((f) => selectFile(f.id));
+          if (settings.autoUploadOnDrop && folderFiles.length > 0) {
+            void runUploadBatch(folderFiles);
+          } else {
+            pushNotification(
+              'success',
+              'Folder staged for upload',
+              `"${dragged.label}" (${folderFiles.length} files) dropped onto Upload Zone.`
+            );
+            recordAction(`Dropped folder ${dragged.label} onto upload zone`);
+          }
+          return;
+        }
+
+        if (
+          target.type === 'action' &&
+          (target.id === 'nav-dashboard' || target.id === 'nav-files')
+        ) {
+          const nextTab: NavTab = target.id === 'nav-files' ? 'files' : 'dashboard';
+          setActiveTab(nextTab);
+          folderFiles.forEach((f) => selectFile(f.id));
+          recordAction(`Moved folder ${dragged.label} to ${nextTab} screen`);
+          return;
+        }
+
+        folderFiles.forEach((f) => selectFile(f.id));
+        recordAction(`Dropped folder ${dragged.label} on ${activeTabRef.current} screen`);
       }
     },
     [
+      activateDomActionTarget,
+      moveFileOutOfFolder,
       moveFileToFolder,
+      moveFolderToFolder,
       pushNotification,
       recordAction,
+      reorderFileInQueue,
       runUploadBatch,
       selectFile,
       settings.autoUploadOnDrop,
+      stageExplorerPath,
     ]
   );
 
   const handleGestureCancel = useCallback(() => {
-    if (draggingFileIdRef.current) {
-      setDraggingFileId(null);
+    if (draggingItemRef.current) {
+      setDraggingItem(null);
       recordAction('Cancelled gesture drag');
     } else if (contextMenuRef.current.open) {
       setContextMenu(CLOSED_CONTEXT_MENU);
@@ -1376,7 +1811,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
   }, [clearSelection, recordAction]);
 
   const handleEmergencyStop = useCallback(() => {
-    setDraggingFileId(null);
+    setDraggingItem(null);
     setContextMenu(CLOSED_CONTEXT_MENU);
     setGesturePaused(true);
     recordAction('Emergency Stop: Both fists paused all gesture actions');
@@ -1431,28 +1866,81 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     ]
   );
 
-  const { modelLoading, modelError, subscribeTracking } = useHandTracking({
-    enabled: gestureModeEnabled,
-    paused: gesturePaused,
-    mirror: settings.mirrorPreview,
-    videoRef,
-    stream: cameraStream,
-    config: handTrackingConfig,
-    onGestureStateUpdate: handleGestureStateUpdate,
-    onHoverTargetChange: setHoveredTarget,
-    onPinchStart: handlePinchStart,
-    onLeftClick: handleLeftClick,
-    onDoubleClick: handleDoubleClick,
-    onRightClick: handleRightClick,
-    onChooseSelect: handleChooseSelect,
-    onDragStart: handleDragStart,
-    onDrop: handleDrop,
-    onCancel: handleGestureCancel,
-    onConfirm: handleGestureConfirm,
-    onReject: handleGestureReject,
-    onEmergencyStop: handleEmergencyStop,
-    onScroll: handleGestureScroll,
-  });
+  const { modelLoading, modelError, subscribeTracking, completeInstantGrab } =
+    useHandTracking({
+      enabled: gestureModeEnabled,
+      paused: gesturePaused,
+      mirror: settings.mirrorPreview,
+      videoRef,
+      stream: cameraStream,
+      config: handTrackingConfig,
+      onGestureStateUpdate: handleGestureStateUpdate,
+      onHoverTargetChange: setHoveredTarget,
+      onPinchStart: handlePinchStart,
+      onLeftClick: handleLeftClick,
+      onDoubleClick: handleDoubleClick,
+      onRightClick: handleRightClick,
+      onChooseSelect: handleChooseSelect,
+      onDragStart: handleDragStart,
+      onDrop: handleDrop,
+      onCancel: handleGestureCancel,
+      onConfirm: handleGestureConfirm,
+      onReject: handleGestureReject,
+      onEmergencyStop: handleEmergencyStop,
+      onScroll: handleGestureScroll,
+    });
+
+  completeInstantGrabRef.current = completeInstantGrab;
+
+  // Live AR/VR carry loop: stream overlay reposition deltas + auto-switch screens when
+  // hovering nav tabs while carrying a file or folder.
+  useEffect(() => {
+    if (!gestureModeEnabled || !draggingItem) return;
+
+    let prevX = draggingItem.startX;
+    let prevY = draggingItem.startY;
+    let navHoverId: string | null = null;
+    let navHoverSinceMs = 0;
+
+    return subscribeTracking((snapshot) => {
+      if (draggingItem.kind === 'overlay') {
+        const dx = snapshot.cursorX - prevX;
+        const dy = snapshot.cursorY - prevY;
+        prevX = snapshot.cursorX;
+        prevY = snapshot.cursorY;
+        if (dx !== 0 || dy !== 0) {
+          window.dispatchEvent(
+            new CustomEvent('gx:move-overlay', {
+              detail: { id: draggingItem.id, dx, dy },
+            })
+          );
+        }
+        return;
+      }
+
+      if (draggingItem.kind === 'file' || draggingItem.kind === 'folder') {
+        const t = snapshot.hoverTarget;
+        const isNavTarget =
+          t.type === 'action' && (t.id === 'nav-dashboard' || t.id === 'nav-files');
+        if (isNavTarget && t.id) {
+          if (navHoverId !== t.id) {
+            navHoverId = t.id;
+            navHoverSinceMs = performance.now();
+          } else if (performance.now() - navHoverSinceMs >= 380) {
+            const nextTab: NavTab = t.id === 'nav-files' ? 'files' : 'dashboard';
+            if (activeTabRef.current !== nextTab) {
+              setActiveTab(nextTab);
+              recordAction(`Switched to ${nextTab} screen while carrying item`);
+            }
+            navHoverSinceMs = performance.now() + 999999;
+          }
+        } else {
+          navHoverId = null;
+          navHoverSinceMs = 0;
+        }
+      }
+    });
+  }, [draggingItem, gestureModeEnabled, recordAction, subscribeTracking]);
 
   const toggleGestureMode = useCallback(async () => {
     if (gestureModeEnabled) {
@@ -1467,7 +1955,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       setTwoHandModifiers(DEFAULT_MODIFIERS);
       setGestureState('IDLE');
       setRecognizedGesture('NONE');
-      setDraggingFileId(null);
+      setDraggingItem(null);
       setHoveredTarget({ type: null, id: null });
       recordAction('Disabled Gesture Mode');
     } else {
@@ -1491,7 +1979,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const pauseGestureMode = useCallback(() => {
     setGesturePaused(true);
-    setDraggingFileId(null);
+    setDraggingItem(null);
     setContextMenu(CLOSED_CONTEXT_MENU);
     recordAction('Paused gesture interactions');
   }, [recordAction]);
@@ -1850,6 +2338,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     requestRemoveSelected,
     requestClearAllFiles,
     moveFileToFolder,
+    moveFileOutOfFolder,
+    moveFolderToFolder,
+    reorderFileInQueue,
     uploadSingleFile,
     uploadSelectedFiles,
     uploadAllFiles,
@@ -1883,6 +2374,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     pinchDistance,
     hoveredTarget,
     draggingFileId,
+    draggingItem,
     toggleGestureMode,
     retryCamera,
     pauseGestureMode,

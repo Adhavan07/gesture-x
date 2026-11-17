@@ -321,9 +321,10 @@ export const GestureEnginePanel: React.FC = () => {
           </div>
 
           <p className="text-xs text-slate-400 leading-relaxed">
-            Primary: <strong className="text-slate-200">Left Click</strong> ({GESTURE_TRIGGER_LABELS[m.LEFT_CLICK]}) ·{' '}
+            Primary: <strong className="text-slate-200">Choose / Grab</strong> ({GESTURE_TRIGGER_LABELS[m.GRAB_CHOOSE]}) ·{' '}
+            <strong className="text-slate-200">Drop</strong> ({GESTURE_TRIGGER_LABELS[m.DROP_RELEASE]}) ·{' '}
+            <strong className="text-slate-200">Left Click</strong> ({GESTURE_TRIGGER_LABELS[m.LEFT_CLICK]}) ·{' '}
             <strong className="text-slate-200">Right Click</strong> ({GESTURE_TRIGGER_LABELS[m.RIGHT_CLICK]}) ·{' '}
-            <strong className="text-slate-200">Drag</strong> ({GESTURE_TRIGGER_LABELS[m.DRAG_DROP]}) ·{' '}
             <strong className="text-slate-200">2D Scroll</strong> ({GESTURE_TRIGGER_LABELS[m.SCROLL]})
           </p>
           {settings.multiHandEnabled ? (
