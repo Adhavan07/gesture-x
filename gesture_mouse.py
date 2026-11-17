@@ -1,10 +1,10 @@
 
+import argparse
 import os
 import sys
 import time
 import shutil
 import subprocess
-import tkinter as tk
 
 import cv2
 import mediapipe as mp
@@ -59,6 +59,8 @@ if SESSION not in ("wayland", "x11"):
 
 def get_screen_size():
     try:
+        import tkinter as tk
+
         root = tk.Tk()
         root.withdraw()
         width = root.winfo_screenwidth()
@@ -70,7 +72,31 @@ def get_screen_size():
         sys.exit(1)
 
 
-SCREEN_WIDTH, SCREEN_HEIGHT = get_screen_size()
+SCREEN_WIDTH = 0
+SCREEN_HEIGHT = 0
+
+
+class PreviewMouseController:
+    def move(self, x, y):
+        pass
+
+    def click_left(self):
+        pass
+
+    def click_right(self):
+        pass
+
+    def left_down(self):
+        pass
+
+    def left_up(self):
+        pass
+
+    def scroll(self, amount):
+        pass
+
+    def release_all(self):
+        pass
 
 
 class MouseController:
@@ -484,6 +510,26 @@ class GestureMouse:
 # ============================================================
 
 def main():
+    global SCREEN_WIDTH, SCREEN_HEIGHT
+
+    parser = argparse.ArgumentParser(description="Gesture-controlled virtual mouse")
+    parser.add_argument(
+        "--preview-only",
+        action="store_true",
+        help="recognize gestures without controlling the system mouse",
+    )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="skip the camera window and print gesture status in the terminal",
+    )
+    args = parser.parse_args()
+
+    if args.preview_only:
+        SCREEN_WIDTH, SCREEN_HEIGHT = CAMERA_WIDTH, CAMERA_HEIGHT
+    else:
+        SCREEN_WIDTH, SCREEN_HEIGHT = get_screen_size()
+
     print("\n========================================")
     print("       GESTURE VIRTUAL MOUSE")
     print("========================================")
@@ -501,7 +547,11 @@ def main():
     print("----------------------------------------")
     print("Press Q or ESC to quit.\n")
 
-    mouse = MouseController()
+    if args.preview_only:
+        print("Preview only: system mouse input is disabled.")
+        mouse = PreviewMouseController()
+    else:
+        mouse = MouseController()
     controller = GestureMouse(mouse)
 
     camera = cv2.VideoCapture(CAMERA_INDEX)
@@ -516,6 +566,7 @@ def main():
         )
 
     previous_timestamp = 0
+    previous_status = None
 
     try:
         with HandLandmarker.create_from_options(options) as landmarker:
@@ -600,13 +651,17 @@ def main():
                     2
                 )
 
-                if SHOW_CAMERA:
+                if args.headless and status != previous_status:
+                    print("STATUS:", status, flush=True)
+                    previous_status = status
+
+                if SHOW_CAMERA and not args.headless:
                     cv2.imshow(
                         "Gesture Virtual Mouse - Q to quit",
                         frame
                     )
 
-                key = cv2.waitKey(1) & 0xFF
+                key = cv2.waitKey(1) & 0xFF if not args.headless else 0xFF
 
                 if key == ord("q") or key == 27:
                     break

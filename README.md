@@ -50,3 +50,4 @@ python3 gesture_mouse.py
 ```
 
 Press `q` in the camera preview window to exit.
+
